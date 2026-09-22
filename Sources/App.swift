@@ -56,6 +56,10 @@ import AppKit
             menu.addItem(.separator())
             let hint = NSMenuItem(title: "点击惊散鱼群 · 拖动拨动水流", action: nil, keyEquivalent: "")
             hint.isEnabled = false; menu.addItem(hint)
+            if desktop.interactive {
+                let unavailable = NSMenuItem(title: desktop.input.status, action: nil, keyEquivalent: "")
+                unavailable.isEnabled = false; menu.addItem(unavailable)
+            }
             menu.addItem(.separator())
         }
         add(menu, "退出透明海洋", #selector(quit), key: "q")

@@ -124,7 +124,9 @@ final class TransparentMetalView: MTKView {
 
     private func tick() {
         let start = ProcessInfo.processInfo.systemUptime
-        let delta = Float(min(start - previousTime, 1.0 / 15))
+        // Preserve elapsed time through ordinary slow frames; the simulation substeps it.
+        // Lifecycle transitions reset previousTime, so sleep never produces a large jump.
+        let delta = Float(min(start - previousTime, 1.0))
         previousTime = start
         if let screen = NSScreen.screens.first { input.refresh(screen: screen) }
         simulation.pointerMoved(to: input.hover())
@@ -173,6 +175,7 @@ final class TransparentMetalView: MTKView {
             "currents": simulation.currents.count, "clicks": input.clickCount,
             "drags": input.dragCount, "rejectedClicks": input.rejectedCount,
             "geometryValid": input.geometry.valid, "blockedWindows": input.geometry.blockingRects.count,
+            "inputAvailable": input.available, "inputStatus": input.status,
             "screen": [window.frame.origin.x, window.frame.origin.y, window.frame.width, window.frame.height],
             "simulationTime": simulation.time
         ]
