@@ -67,7 +67,8 @@ struct FishMesh {
         outline.append(edge.last!)
         for i in 0..<(outline.count - 1) {
             let n = simd_normalize(simd_cross(outline[i] - root, outline[i + 1] - root))
-            let facing = n.z < 0 ? -n : n
+            let frontNormal = n.z < 0 ? -n : n
+            let facing = root.z < 0 ? -frontNormal : frontNormal
             // Subdivision lets the shader bend membranes without rigid triangle motion.
             for row in 0..<8 {
                 let a = Float(row) / 8, b = Float(row + 1) / 8
@@ -87,12 +88,12 @@ struct FishMesh {
         }
     }
 
-    private mutating func line(_ points: [SIMD3<Float>], width: Float, material: Float) {
+    private mutating func line(_ points: [SIMD3<Float>], width: Float, material: Float, side: Float = 1) {
         for i in 0..<(points.count - 1) {
             let a = points[i], b = points[i + 1]
             let d = simd_normalize(SIMD3<Float>(-(b.y - a.y), b.x - a.x, 0)) * width
-            triangle(vertex(a - d, SIMD3(0, 0, 1), material), vertex(b - d, SIMD3(0, 0, 1), material), vertex(b + d, SIMD3(0, 0, 1), material))
-            triangle(vertex(a - d, SIMD3(0, 0, 1), material), vertex(b + d, SIMD3(0, 0, 1), material), vertex(a + d, SIMD3(0, 0, 1), material))
+            triangle(vertex(a - d, SIMD3(0, 0, side), material), vertex(b - d, SIMD3(0, 0, side), material), vertex(b + d, SIMD3(0, 0, side), material))
+            triangle(vertex(a - d, SIMD3(0, 0, side), material), vertex(b + d, SIMD3(0, 0, side), material), vertex(a + d, SIMD3(0, 0, side), material))
         }
     }
 
@@ -130,17 +131,21 @@ struct FishMesh {
         let eyeX: Float = 0.295, eyeY = height * 0.27
         let eyeZ = girth * 0.69
         let eyeSize: Float = species == .silver ? 0.028 : 0.034
-        ellipsoid(center: SIMD3(eyeX, eyeY, eyeZ), radius: SIMD3(eyeSize, eyeSize, 0.012), material: 3)
-        ellipsoid(center: SIMD3(eyeX + 0.003, eyeY, eyeZ + 0.010), radius: SIMD3(eyeSize * 0.65, eyeSize * 0.73, 0.008), material: 4)
-        ellipsoid(center: SIMD3(eyeX + 0.010, eyeY + eyeSize * 0.30, eyeZ + 0.018), radius: SIMD3(eyeSize * 0.18, eyeSize * 0.18, 0.003), material: 5, rings: 6, sides: 10)
+        for side: Float in [-1, 1] {
+            ellipsoid(center: SIMD3(eyeX, eyeY, eyeZ * side), radius: SIMD3(eyeSize, eyeSize, 0.012), material: 3)
+            ellipsoid(center: SIMD3(eyeX + 0.003, eyeY, (eyeZ + 0.010) * side), radius: SIMD3(eyeSize * 0.65, eyeSize * 0.73, 0.008), material: 4)
+            ellipsoid(center: SIMD3(eyeX + 0.010, eyeY + eyeSize * 0.30, (eyeZ + 0.018) * side), radius: SIMD3(eyeSize * 0.18, eyeSize * 0.18, 0.003), material: 5, rings: 6, sides: 10)
+        }
         var gill: [SIMD3<Float>] = []
         for i in 0...16 {
             let t = Float(i) / 16
             gill.append(SIMD3(0.16 - 0.05 * sin(t * .pi), height * (0.62 - t * 1.18), girth * (0.80 + 0.17 * sin(t * .pi))))
         }
-        line(gill, width: 0.0022, material: 6)
-        line([SIMD3(0.401, -height * 0.05, girth * 0.28), SIMD3(0.355, -height * 0.10, girth * 0.49)], width: 0.0025, material: 6)
-        fin(root: SIMD3(0.14, -height * 0.18, girth * 0.92), edge: [SIMD3(0.005, -height * 0.16, girth * 1.50), SIMD3(-0.09, -height * 0.56, girth * 1.90), SIMD3(-0.035, -height * 0.86, girth * 1.70), SIMD3(0.045, -height * 0.74, girth * 1.25)], motion: 1)
+        for side: Float in [-1, 1] {
+            line(gill.map { SIMD3($0.x, $0.y, $0.z * side) }, width: 0.0022, material: 6, side: side)
+            line([SIMD3(0.401, -height * 0.05, girth * 0.28 * side), SIMD3(0.355, -height * 0.10, girth * 0.49 * side)], width: 0.0025, material: 6, side: side)
+            fin(root: SIMD3(0.14, -height * 0.18, girth * 0.92 * side), edge: [SIMD3(0.005, -height * 0.16, girth * 1.50 * side), SIMD3(-0.09, -height * 0.56, girth * 1.90 * side), SIMD3(-0.035, -height * 0.86, girth * 1.70 * side), SIMD3(0.045, -height * 0.74, girth * 1.25 * side)], motion: 1)
+        }
     }
 
     private mutating func makeManta() {

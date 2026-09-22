@@ -54,6 +54,7 @@ struct RenderTests {
         try renderer.writePNG(frame: frame, width: 1440, height: 900, to: output.appendingPathComponent("ocean-dark.png"), background: SIMD3(0.035, 0.07, 0.10))
         try renderer.writePNG(frame: frame, width: 1440, height: 900, to: output.appendingPathComponent("ocean-light.png"), background: SIMD3(0.92, 0.93, 0.89))
         frame.time += 0.57
+        for index in frame.fish.indices { frame.fish[index].phase += 0.57 * 4.8 }
         let animated = try renderer.renderRGBA(frame: frame, width: 1440, height: 900)
         let changed = zip(first, animated).filter { $0 != $1 }.count
         precondition(changed > 1_000, "Mesh and water animation must vary over time.")
@@ -63,9 +64,41 @@ struct RenderTests {
                                     fish: [FishState(id: 0, species: species, position: SIMD2(270, 170), velocity: SIMD2(35, 0), heading: 0.1, length: 330, depth: 0, phase: 0.7, panic: 0)], ripples: [], currents: [], waterStrength: 0)
             let a = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
             sample.time += 0.6
+            sample.fish[0].phase += 0.6 * 4.8
             let b = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
             precondition(zip(a, b).filter { $0 != $1 }.count > 100, "Each species needs actual mesh animation.")
             try renderer.writePNG(frame: sample, width: 960, height: 640, to: output.appendingPathComponent("fish-\(species.rawValue).png"), background: SIMD3(0.08, 0.13, 0.16))
+            // Fixed accumulated phase must not jump when speed changes late in a run.
+            sample.time = 100_000
+            sample.fish[0].velocity = SIMD2(190, 0)
+            let late = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
+            precondition(b == late, "Elapsed time and instantaneous speed must not change an already integrated pose.")
+            func relativePixelChange(_ before: [UInt8], _ after: [UInt8]) -> Double {
+                let difference = zip(before, after).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
+                let coverage = stride(from: 3, to: before.count, by: 4).reduce(0) { $0 + Int(before[$1]) }
+                return Double(difference) / Double(max(1, coverage * 4))
+            }
+            sample.fish[0].phase = 2 * .pi - 0.002
+            let wrapBefore = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
+            sample.fish[0].phase = 0.002
+            let wrapAfter = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
+            precondition(relativePixelChange(wrapBefore, wrapAfter) < 0.025, "Phase wrapping must preserve continuous body and pectoral motion.")
+            for heading: Float in [-Float.pi / 2, Float.pi / 2] {
+                sample.fish[0].heading = heading - 0.0005
+                let turnBefore = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
+                if species == .clown && heading > 0 {
+                    try renderer.writePNG(frame: sample, width: 960, height: 640, to: output.appendingPathComponent("turn-before.png"), background: SIMD3(0.08, 0.13, 0.16))
+                }
+                sample.fish[0].heading = heading + 0.0005
+                let turnAfter = try renderer.renderRGBA(frame: sample, width: 480, height: 320)
+                let change = relativePixelChange(turnBefore, turnAfter)
+                print("Continuous turn: species \(species.rawValue), heading \(heading), normalized pixel delta \(change)")
+                fflush(stdout)
+                precondition(change < 0.025, "Crossing a vertical heading must not mirror the full fish abruptly.")
+                if species == .clown && heading > 0 {
+                    try renderer.writePNG(frame: sample, width: 960, height: 640, to: output.appendingPathComponent("turn-after.png"), background: SIMD3(0.08, 0.13, 0.16))
+                }
+            }
         }
         let near = FishState(id: 1, species: .clown, position: SIMD2(160, 100), velocity: .zero, heading: 0, length: 200, depth: 0, phase: 0, panic: 0)
         let far = FishState(id: 2, species: .tang, position: SIMD2(160, 100), velocity: .zero, heading: 0, length: 260, depth: 0.9, phase: 0, panic: 0)

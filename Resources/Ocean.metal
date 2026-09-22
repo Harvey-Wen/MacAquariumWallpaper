@@ -23,10 +23,8 @@ vertex FishVarying fishVertex(uint id [[vertex_id]], const device FishVertex *ve
     float3 p = v.position.xyz;
     float3 n = v.normal.xyz;
     float species = u.kind.x;
-    float t = u.viewport.z;
-    float phase = u.motion.y;
-    float rate = species == 4 ? 1.75 : 3.6 + min(u.motion.z / 70.0, 2.0) + u.motion.w * 2.0;
-    float wave = t * rate + phase;
+    // The simulation integrates phase; speed changes never multiply elapsed time.
+    float wave = u.motion.y;
     if (species == 4) {
         float wing = pow(abs(p.y) / 0.58, 1.45);
         p.z += wing * 0.13 * sin(wave - abs(p.y) * 4.0);
@@ -40,20 +38,16 @@ vertex FishVarying fishVertex(uint id [[vertex_id]], const device FishVertex *ve
         p.y += sin(wave + p.x * 5.0) * bend * 0.34;
         n.x += cos(wave + p.x * 6.0) * tail * 0.20;
         if (v.detail.y == 1) {
-            p.z += sin(wave * 1.35) * 0.065 * v.detail.w;
-            p.x += cos(wave * 1.35) * 0.022 * v.detail.w;
+            p.z += sin(wave * 2.0) * 0.065 * v.detail.w * sign(v.position.z);
+            p.x += cos(wave * 2.0) * 0.022 * v.detail.w;
         }
     }
-    // Heading changes facing and yaw; screen-up remains the fish's dorsal side.
-    float facing = cos(u.motion.x) >= 0 ? 1.0 : -1.0;
-    float yaw = sin(u.motion.x) * 0.70;
-    float yawCos = sqrt(1.0 - yaw * yaw);
-    float3 posed = float3(facing * (p.x * yawCos + p.z * yaw), p.y, p.z * yawCos - p.x * yaw);
-    float3 normal = float3(facing * (n.x * yawCos + n.z * yaw), n.y, n.z * yawCos - n.x * yaw);
-    float pitch = sin(u.motion.x) * facing * (species == 4 ? 0.35 : 0.24);
-    float c = cos(pitch), s = sin(pitch);
-    posed.xy = float2(c * posed.x - s * posed.y, s * posed.x + c * posed.y);
-    normal.xy = float2(c * normal.x - s * normal.y, s * normal.x + c * normal.y);
+    // Continuous yaw passes through an edge-on view, with the dorsal axis upright.
+    float c = cos(u.motion.x), s = sin(u.motion.x);
+    float pitch = s * (species == 4 ? 0.35 : 0.24);
+    float3 posed = float3(c * p.x + s * p.z, p.y + pitch * p.x, c * p.z - s * p.x);
+    n.x -= pitch * n.y;
+    float3 normal = float3(c * n.x + s * n.z, n.y, c * n.z - s * n.x);
     float scale = u.placement.z * (1.0 - 0.27 * u.placement.w);
     float2 screen = u.placement.xy + posed.xy * scale;
     FishVarying out;
