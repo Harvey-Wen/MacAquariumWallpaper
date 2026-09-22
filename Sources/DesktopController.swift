@@ -1,0 +1,183 @@
+import AppKit
+import MetalKit
+
+final class OceanWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+final class TransparentMetalView: MTKView {
+    override var isOpaque: Bool { false }
+}
+
+@MainActor final class DesktopController {
+    let window: OceanWindow
+    let view: TransparentMetalView
+    let renderer: OceanRenderer
+    let simulation: OceanSimulation
+    let input: DesktopInput
+    var enabled = true { didSet { updateActivity() } }
+    var paused = false { didSet { updateActivity() } }
+    var interactive = true { didSet { updateActivity() } }
+    var waterStrength: Float = 0.45 { didSet { render() } }
+    var diagnosticURL: URL?
+    private(set) var sleeping = false
+    private var locked = false
+    private(set) var frameCount = 0
+    private(set) var meanFrameMS = 0.0
+    private var timer: Timer?
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var previousTime = ProcessInfo.processInfo.systemUptime
+    private var lastDiagnostic = 0.0
+    private var displayID: CGDirectDisplayID = 0
+
+    var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    var animating: Bool { enabled && !paused && !sleeping && !locked && !reducedMotion }
+    var status: String {
+        if !enabled { return "海洋已关闭" }
+        if locked { return "屏幕已锁定 · 已停止绘制" }
+        if sleeping { return "屏幕休眠 · 已停止绘制" }
+        if reducedMotion { return "减少动态效果 · 静止显示" }
+        if paused { return "已暂停 · 保留当前画面" }
+        return "29 只海洋生物 · 主屏 30 FPS"
+    }
+
+    init(shaderURL: URL) throws {
+        guard let screen = NSScreen.screens.first else {
+            throw NSError(domain: "Ocean", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到可用显示器"])
+        }
+        let bounds = screen.frame
+        simulation = OceanSimulation(size: SIMD2(Float(bounds.width), Float(bounds.height)))
+        window = OceanWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.canHide = false
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.title = "透明海洋 · 原壁纸覆盖层"
+        view = TransparentMetalView(frame: NSRect(origin: .zero, size: bounds.size), device: MTLCreateSystemDefaultDevice())
+        view.clearColor = MTLClearColorMake(0, 0, 0, 0)
+        view.layer?.isOpaque = false
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.autoresizingMask = [.width, .height]
+        renderer = try OceanRenderer(view: view, shaderURL: shaderURL)
+        view.isPaused = true
+        view.enableSetNeedsDisplay = false
+        view.delegate = renderer
+        window.contentView = view
+        window.setFrame(bounds, display: false)
+        displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+        input = DesktopInput(screen: screen)
+        input.onClick = { [weak self] point in self?.simulation.click(at: point) }
+        input.onDrag = { [weak self] point in self?.simulation.drag(to: point) }
+        input.onEnd = { [weak self] in self?.simulation.endDrag() }
+        observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { $0.screenChanged() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidSleepNotification) { $0.sleeping = true; $0.updateActivity() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidWakeNotification) { $0.sleeping = false; $0.screenChanged(); $0.updateActivity() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.willSleepNotification) { $0.sleeping = true; $0.updateActivity() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.didWakeNotification) { $0.sleeping = false; $0.screenChanged(); $0.updateActivity() }
+        observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked")) { $0.locked = true; $0.updateActivity() }
+        observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked")) { $0.locked = false; $0.updateActivity() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.activeSpaceDidChangeNotification) { controller in
+            controller.input.endGesture()
+            if let screen = NSScreen.screens.first { controller.input.refresh(screen: screen, force: true) }
+        }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.didActivateApplicationNotification) { controller in
+            if let screen = NSScreen.screens.first { controller.input.refresh(screen: screen, force: true) }
+        }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { $0.updateActivity() }
+    }
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name,
+                         action: @escaping (DesktopController) -> Void) {
+        let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if let self { action(self) } }
+        }
+        observers.append((center, observer))
+    }
+
+    func start() { updateActivity() }
+
+    private func updateActivity() {
+        timer?.invalidate(); timer = nil
+        input.enabled = animating && interactive
+        if !input.enabled { simulation.pointerMoved(to: nil); input.endGesture() }
+        previousTime = ProcessInfo.processInfo.systemUptime
+        if enabled && !sleeping && !locked {
+            if !window.isVisible { window.orderFrontRegardless() }
+            render()
+        } else { window.orderOut(nil) }
+        if animating {
+            let tickTimer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick() }
+            }
+            RunLoop.main.add(tickTimer, forMode: .common)
+            timer = tickTimer
+        }
+        writeDiagnostics()
+    }
+
+    private func tick() {
+        let start = ProcessInfo.processInfo.systemUptime
+        let delta = Float(min(start - previousTime, 1.0 / 15))
+        previousTime = start
+        if let screen = NSScreen.screens.first { input.refresh(screen: screen) }
+        simulation.pointerMoved(to: input.hover())
+        simulation.update(deltaTime: delta)
+        render()
+        frameCount += 1
+        meanFrameMS += ((ProcessInfo.processInfo.systemUptime - start) * 1000 - meanFrameMS) / Double(frameCount)
+        if start - lastDiagnostic >= 1 { lastDiagnostic = start; writeDiagnostics() }
+    }
+
+    func render() {
+        renderer.frame = simulation.frame(waterStrength: waterStrength)
+        view.draw()
+    }
+
+    func screenChanged() {
+        guard let screen = NSScreen.screens.first else { window.orderOut(nil); return }
+        let currentID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+        if currentID != displayID || window.frame != screen.frame {
+            displayID = currentID
+            input.endGesture()
+            window.setFrame(screen.frame, display: true)
+            simulation.resize(to: SIMD2(Float(screen.frame.width), Float(screen.frame.height)))
+        }
+        input.refresh(screen: screen, force: true)
+        if enabled && !sleeping && !locked { render() }
+    }
+
+    func stop() {
+        timer?.invalidate(); timer = nil
+        input.stop()
+        for (center, observer) in observers { center.removeObserver(observer) }
+        observers.removeAll()
+        window.orderOut(nil)
+        window.close()
+    }
+
+    func writeDiagnostics() {
+        guard let diagnosticURL else { return }
+        let dictionary: [String: Any] = [
+            "status": status, "frames": frameCount, "meanCPUFrameMS": meanFrameMS,
+            "enabled": enabled, "paused": paused, "interactive": interactive,
+            "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,
+            "opaque": window.isOpaque, "level": window.level.rawValue,
+            "fish": simulation.fish.count, "ripples": simulation.ripples.count,
+            "currents": simulation.currents.count, "clicks": input.clickCount,
+            "drags": input.dragCount, "rejectedClicks": input.rejectedCount,
+            "geometryValid": input.geometry.valid, "blockedWindows": input.geometry.blockingRects.count,
+            "screen": [window.frame.origin.x, window.frame.origin.y, window.frame.width, window.frame.height],
+            "simulationTime": simulation.time
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: diagnosticURL, options: .atomic)
+        }
+    }
+}
