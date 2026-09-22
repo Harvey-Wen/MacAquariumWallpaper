@@ -38,9 +38,38 @@ import AppKit
             record(owner: "Dock", pid: 2, layer: 20, bounds: CGRect(x: 400, y: 840, width: 600, height: 60)),
             record(owner: "Safari", pid: 3, layer: 0, bounds: display, alpha: 0)
         ]
-        let exclusions = DesktopInputGeometry.blockers(from: records, screenFrame: display, primaryTop: 900, ownPID: ownPID)
-        check(exclusions.count == 2, "Finder file windows and actual Dock block; wallpaper/own/transparent hosts do not")
-        check(exclusions.contains(CGRect(x: 20, y: 550, width: 300, height: 250)), "Finder files are not treated as desktop")
+        let snapshot = DesktopWindowSnapshot.parse(records: records, screenFrame: display,
+                                                   primaryTop: 900, ownPID: ownPID)
+        check(snapshot.valid, "normal desktop snapshot remains available")
+        check(snapshot.blockingRects.count == 2, "Finder file windows and actual Dock block; known Dock host does not")
+        check(snapshot.blockingRects.contains(CGRect(x: 20, y: 550, width: 300, height: 250)), "Finder files are not treated as desktop")
+        check(snapshot.blockedEventPIDs.contains(2), "Dock event targets are rejected even when its transparent host is ignored")
+        check(!DesktopWindowSnapshot.parse(records: [], screenFrame: display, primaryTop: 900, ownPID: ownPID).valid,
+              "empty window snapshots fail closed")
+        var malformed = records
+        malformed.append([kCGWindowOwnerPID as String: 9, kCGWindowLayer as String: 0])
+        check(!DesktopWindowSnapshot.parse(records: malformed, screenFrame: display,
+                                           primaryTop: 900, ownPID: ownPID).valid,
+              "malformed window records fail closed")
+        let systemOverlay = records + [record(owner: "WindowManager", pid: 4, layer: 20, bounds: display)]
+        let suppressed = DesktopWindowSnapshot.parse(records: systemOverlay, screenFrame: display,
+                                                      primaryTop: 900, ownPID: ownPID)
+        check(!suppressed.valid && suppressed.status.contains("系统界面"),
+              "ambiguous full-screen system UI suppresses input")
+        let geometryWithTargets = DesktopInputGeometry(screenFrame: display, visibleFrame: display,
+                                                       blockingRects: snapshot.blockingRects,
+                                                       blockedEventPIDs: snapshot.blockedEventPIDs, valid: true)
+        check(geometryWithTargets.containsDesktop(CGPoint(x: 1000, y: 300), eventTargetPID: 1),
+              "Finder desktop target remains interactive")
+        check(!geometryWithTargets.containsDesktop(CGPoint(x: 1000, y: 300), eventTargetPID: 2),
+              "system host event target is not desktop interaction")
+        check(!DesktopEventPolicy.allows(CGPoint(x: 1000, y: 300), targetPID: nil,
+                                         geometry: geometryWithTargets),
+              "events without a target PID fail closed")
+        let unavailable = DesktopInputReadiness(monitorInstalled: false, geometryValid: true,
+                                                geometryStatus: "桌面输入可用")
+        check(!unavailable.available && unavailable.status.contains("监听"),
+              "missing event monitor is explicitly unavailable")
 
         var gesture = DesktopGesture()
         check(!gesture.drag(isDesktop: true), "drag from another app cannot start ocean gesture")

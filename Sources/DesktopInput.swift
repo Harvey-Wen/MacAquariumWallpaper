@@ -4,10 +4,12 @@ struct DesktopInputGeometry {
     var screenFrame: CGRect
     var visibleFrame: CGRect
     var blockingRects: [CGRect]
+    var blockedEventPIDs: Set<Int> = []
     var valid: Bool
 
-    func containsDesktop(_ point: CGPoint) -> Bool {
+    func containsDesktop(_ point: CGPoint, eventTargetPID: Int? = nil) -> Bool {
         valid && screenFrame.contains(point) && visibleFrame.contains(point)
+            && (eventTargetPID.map { !blockedEventPIDs.contains($0) } ?? true)
             && !blockingRects.contains { $0.contains(point) }
     }
 
@@ -18,29 +20,75 @@ struct DesktopInputGeometry {
     static func appKitRect(_ rect: CGRect, primaryTop: CGFloat) -> CGRect {
         CGRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
     }
+}
 
-    static func blockers(from records: [[String: Any]], screenFrame: CGRect,
-                         primaryTop: CGFloat, ownPID: pid_t) -> [CGRect] {
-        records.compactMap { record in
-            guard let pid = record[kCGWindowOwnerPID as String] as? Int,
-                  pid != Int(ownPID),
-                  let level = record[kCGWindowLayer as String] as? Int, level >= 0,
-                  ((record[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+struct DesktopWindowSnapshot {
+    var blockingRects: [CGRect]
+    var blockedEventPIDs: Set<Int>
+    var valid: Bool
+    var status: String
+
+    private static let systemOwners: Set<String> = [
+        "Dock", "WindowManager", "Window Server", "Control Center", "Control Centre",
+        "Notification Center", "Notification Centre", "SystemUIServer"
+    ]
+
+    static func parse(records: [[String: Any]], screenFrame: CGRect,
+                      primaryTop: CGFloat, ownPID: pid_t) -> DesktopWindowSnapshot {
+        guard !records.isEmpty else {
+            return DesktopWindowSnapshot(blockingRects: [], blockedEventPIDs: [], valid: false,
+                                         status: "窗口信息暂不可用")
+        }
+        var blockers: [CGRect] = []
+        var blockedPIDs = Set<Int>()
+        for record in records {
+            guard let pid = (record[kCGWindowOwnerPID as String] as? NSNumber)?.intValue,
+                  let level = (record[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  let alpha = (record[kCGWindowAlpha as String] as? NSNumber)?.doubleValue,
                   let dictionary = record[kCGWindowBounds as String] as? [String: Any],
                   let cgRect = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
-                  cgRect.width > 1, cgRect.height > 1 else { return nil }
-            let rect = appKitRect(cgRect, primaryTop: primaryTop)
-            guard rect.intersects(screenFrame) else { return nil }
-            let owner = record[kCGWindowOwnerName as String] as? String ?? ""
-            // These system processes also own full-screen transparent event hosts.
-            // Their compact panels and actual Dock still participate in hit testing.
-            let systemHost = ["Dock", "WindowManager", "Window Server", "Control Center", "Notification Center", "SystemUIServer"].contains(owner)
-            let intersection = rect.intersection(screenFrame)
-            if systemHost && intersection.width * intersection.height >= screenFrame.width * screenFrame.height * 0.95 {
-                return nil
+                  [cgRect.minX, cgRect.minY, cgRect.width, cgRect.height].allSatisfy(\.isFinite),
+                  cgRect.width >= 0, cgRect.height >= 0 else {
+                return DesktopWindowSnapshot(blockingRects: [], blockedEventPIDs: [], valid: false,
+                                             status: "窗口信息不完整，交互暂不可用")
             }
-            return rect
+            let owner = record[kCGWindowOwnerName as String] as? String ?? ""
+            if systemOwners.contains(owner) { blockedPIDs.insert(pid) }
+            guard pid != Int(ownPID), level >= 0, alpha > 0,
+                  cgRect.width > 1, cgRect.height > 1 else { continue }
+            let rect = DesktopInputGeometry.appKitRect(cgRect, primaryTop: primaryTop)
+            guard rect.intersects(screenFrame) else { continue }
+            let intersection = rect.intersection(screenFrame)
+            let nearFullScreen = intersection.width * intersection.height
+                >= screenFrame.width * screenFrame.height * 0.95
+            // Verified on the target system: Dock owns one persistent, transparent
+            // layer-20 host. Its event PID is still rejected below. Any other large
+            // system surface is ambiguous without AX and therefore fails closed.
+            if owner == "Dock", level == 20, nearFullScreen { continue }
+            if systemOwners.contains(owner), nearFullScreen {
+                return DesktopWindowSnapshot(blockingRects: [], blockedEventPIDs: blockedPIDs,
+                                             valid: false, status: "系统界面覆盖桌面，交互暂不可用")
+            }
+            blockers.append(rect)
         }
+        return DesktopWindowSnapshot(blockingRects: blockers, blockedEventPIDs: blockedPIDs,
+                                     valid: true, status: "桌面输入可用")
+    }
+}
+
+struct DesktopInputReadiness {
+    var monitorInstalled: Bool
+    var geometryValid: Bool
+    var geometryStatus: String
+
+    var available: Bool { monitorInstalled && geometryValid }
+    var status: String { monitorInstalled ? geometryStatus : "全局鼠标监听不可用" }
+}
+
+struct DesktopEventPolicy {
+    static func allows(_ point: CGPoint, targetPID: Int?, geometry: DesktopInputGeometry) -> Bool {
+        guard let targetPID else { return false }
+        return geometry.containsDesktop(point, eventTargetPID: targetPID)
     }
 }
 
@@ -66,6 +114,15 @@ struct DesktopGesture {
     private var gesture = DesktopGesture()
     private var lastRefresh: TimeInterval = 0
     private var primaryTop: CGFloat
+    private var geometryStatus = "窗口信息暂不可用"
+    private var eventStatus: String?
+
+    var available: Bool { readiness.available }
+    var status: String { available ? eventStatus ?? readiness.status : readiness.status }
+    private var readiness: DesktopInputReadiness {
+        DesktopInputReadiness(monitorInstalled: monitor != nil, geometryValid: geometry.valid,
+                              geometryStatus: geometryStatus)
+    }
 
     init(screen: NSScreen) {
         primaryTop = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
@@ -85,11 +142,16 @@ struct DesktopGesture {
         geometry.screenFrame = screen.frame
         geometry.visibleFrame = screen.visibleFrame
         guard let records = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            geometry.valid = false; endGesture(); return
+            geometry.valid = false; geometryStatus = "窗口信息暂不可用"; endGesture(); return
         }
-        geometry.blockingRects = DesktopInputGeometry.blockers(from: records, screenFrame: screen.frame,
-                                                               primaryTop: primaryTop, ownPID: ProcessInfo.processInfo.processIdentifier)
-        geometry.valid = true
+        let snapshot = DesktopWindowSnapshot.parse(records: records, screenFrame: screen.frame,
+                                                   primaryTop: primaryTop,
+                                                   ownPID: ProcessInfo.processInfo.processIdentifier)
+        geometry.blockingRects = snapshot.blockingRects
+        geometry.blockedEventPIDs = snapshot.blockedEventPIDs
+        geometry.valid = snapshot.valid
+        geometryStatus = snapshot.status
+        if !snapshot.valid { endGesture() }
     }
 
     func hover() -> SIMD2<Float>? {
@@ -97,7 +159,7 @@ struct DesktopGesture {
         // Clicks are always sourced from event notifications, never polling edges.
         if gesture.active && NSEvent.pressedMouseButtons & 1 == 0 { endGesture() }
         let point = NSEvent.mouseLocation
-        guard enabled, geometry.containsDesktop(point) else { return nil }
+        guard enabled, available, geometry.containsDesktop(point) else { return nil }
         return geometry.localPoint(point)
     }
 
@@ -105,9 +167,13 @@ struct DesktopGesture {
         guard enabled else { return }
         if event.type == .leftMouseUp { endGesture(); return }
         if let screen = NSScreen.screens.first { refresh(screen: screen, force: event.type == .leftMouseDown) }
-        guard let cgPoint = event.cgEvent?.location else { endGesture(); return }
+        guard let cgEvent = event.cgEvent else { endGesture(); return }
+        let cgPoint = cgEvent.location
         let point = CGPoint(x: cgPoint.x, y: primaryTop - cgPoint.y)
-        let allowed = geometry.containsDesktop(point)
+        let target = cgEvent.getIntegerValueField(.eventTargetUnixProcessID)
+        let targetPID = target > 0 ? Int(target) : nil
+        eventStatus = targetPID == nil ? "事件目标不可用，本次交互已忽略" : nil
+        let allowed = available && DesktopEventPolicy.allows(point, targetPID: targetPID, geometry: geometry)
         if event.type == .leftMouseDown {
             if gesture.down(isDesktop: allowed) { clickCount += 1; onClick?(geometry.localPoint(point)) }
             else { rejectedCount += 1; onEnd?() }
