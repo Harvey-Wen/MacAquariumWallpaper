@@ -1,6 +1,6 @@
 # 透明海洋桌面与鱼群交互方案
 
-日期：2026-09-22。状态：待用户确认；已完成参考调查，尚未创建应用代码或进行运行验收。
+日期：2026-09-22。状态：用户已确认并实施。已验证结果和系统场景边界见 [验收记录](../../verification.md)。
 
 ## 目标与首版范围
 
@@ -87,6 +87,6 @@
 - [Apple 当前按钮状态限制](https://developer.apple.com/documentation/appkit/nsevent/pressedmousebuttons)
 - 本地天气项目：`/Users/harvey/Code/MacWeatherWallpaper/README.md` 及 CodeGraph 返回的 `Sources/DesktopController.swift`，仅只读参考。
 
-## 开始实施前
+## 实施授权
 
-用户确认本方案后开始代码实现。当前新目录没有 CodeGraph；按项目说明先询问是否运行 `codegraph init -i`，在有源码后建立索引。Git 可先保存本次调研与待确认方案。
+用户已确认本方案与 CodeGraph 初始化。实现位于 `codex/transparent-ocean` 分支；仓库与索引均已建立，按模块记录实现和验证提交。
