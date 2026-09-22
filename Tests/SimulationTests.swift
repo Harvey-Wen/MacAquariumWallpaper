@@ -20,11 +20,14 @@ private enum SimulationTests {
     static func main() throws {
         try testInitialPopulationAndSeed()
         try testClickFalloffAndRippleLimit()
+        try testRepeatedExactClicksRemainFinite()
         try testDragEndsAndDecays()
+        try testFrameRateIndependence()
+        try testSoftEdgeTurning()
         try testLongRunningBounds()
         try testResizeScalesCoordinates()
         try testFrameSnapshot()
-        print("SimulationTests: 6 passed")
+        print("SimulationTests: 9 passed")
     }
 
     private static func testInitialPopulationAndSeed() throws {
@@ -58,6 +61,19 @@ private enum SimulationTests {
         try expect(simulation.ripples.count <= 16, "ripples must be capped")
     }
 
+    private static func testRepeatedExactClicksRemainFinite() throws {
+        let simulation = OceanSimulation(size: SIMD2(1200, 800), seed: 31)
+        let exactPosition = simulation.fish[0].position
+        for _ in 0..<80 { simulation.click(at: exactPosition) }
+        for _ in 0..<120 { simulation.update(deltaTime: 1 / 60) }
+
+        for fish in simulation.fish {
+            try expect(isFinite(fish.position) && isFinite(fish.velocity), "exact click storm must keep fish state finite")
+            try expect(fish.heading.isFinite && fish.panic.isFinite, "exact click storm must keep scalars finite")
+            try expect(simd_length(fish.velocity) < 350, "interaction must keep fish speed bounded")
+        }
+    }
+
     private static func testDragEndsAndDecays() throws {
         let simulation = OceanSimulation(size: SIMD2(1000, 700), seed: 3)
         simulation.drag(to: SIMD2(200, 300))
@@ -70,6 +86,42 @@ private enum SimulationTests {
         for _ in 0..<240 { simulation.update(deltaTime: 1 / 60) }
         try expect(simulation.currents.isEmpty, "ended drag currents should decay away")
         try expect(simulation.fish.allSatisfy { $0.panic < 0.15 }, "fish should recover after disturbance")
+    }
+
+    private static func testFrameRateIndependence() throws {
+        let thirtyFPS = OceanSimulation(size: SIMD2(1280, 720), seed: 13)
+        let fiveFPS = OceanSimulation(size: SIMD2(1280, 720), seed: 13)
+        for _ in 0..<120 { thirtyFPS.update(deltaTime: 1 / 30) }
+        for _ in 0..<20 { fiveFPS.update(deltaTime: 1 / 5) }
+
+        try expect(abs(thirtyFPS.time - 4) < 0.001, "30 FPS run should consume the full duration")
+        try expect(abs(fiveFPS.time - 4) < 0.001, "5 FPS run should consume the full duration")
+        let largestDifference = zip(thirtyFPS.fish, fiveFPS.fish)
+            .map { simd_distance($0.position, $1.position) }
+            .max() ?? 0
+        try expect(largestDifference < 0.1, "equal durations at 30 and 5 FPS should produce equivalent state")
+
+        let longFrame = OceanSimulation(size: SIMD2(900, 600), seed: 2)
+        longFrame.update(deltaTime: 0.5)
+        try expect(abs(longFrame.time - 0.5) < 0.0001, "a reasonable long frame must not discard elapsed time")
+    }
+
+    private static func testSoftEdgeTurning() throws {
+        let size = SIMD2<Float>(800, 600)
+        let simulation = OceanSimulation(size: size, seed: 23)
+        let candidate = simulation.fish.min { $0.position.x < $1.position.x }!
+        let clickPoint = candidate.position + SIMD2<Float>(90, 0)
+        for _ in 0..<6 { simulation.click(at: clickPoint) }
+
+        var turnedInward = false
+        for _ in 0..<600 {
+            simulation.update(deltaTime: 1 / 60)
+            let state = simulation.fish[candidate.id]
+            try expect(state.position.x > 0 && state.position.x < size.x, "soft steering should avoid the horizontal hard boundary")
+            try expect(state.position.y > 0 && state.position.y < size.y, "soft steering should avoid the vertical hard boundary")
+            if state.velocity.x > 0 { turnedInward = true }
+        }
+        try expect(turnedInward, "a fish driven toward an edge should turn inward")
     }
 
     private static func testLongRunningBounds() throws {
@@ -88,6 +140,7 @@ private enum SimulationTests {
             try expect(fish.position.y >= 0 && fish.position.y <= size.y, "fish y must remain bounded")
             try expect(fish.heading.isFinite && fish.panic.isFinite, "heading and panic must remain finite")
             try expect(fish.panic < 0.02, "panic should return to rest")
+            try expect(fish.phase >= 0 && fish.phase < 2 * .pi, "animation phase should remain wrapped")
         }
     }
 
@@ -115,5 +168,6 @@ private enum SimulationTests {
         try expect(frame.time == simulation.time, "frame time should match simulation")
         try expect(frame.fish.count == 29, "frame should contain all fish")
         try expect(frame.waterStrength == 0.7, "frame should preserve requested water strength")
+        try expect(abs(frame.time - 0.25) < 0.0001, "frame time should include the full update interval")
     }
 }

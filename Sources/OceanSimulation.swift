@@ -10,6 +10,7 @@ final class OceanSimulation {
 
     private var pointerPosition: SIMD2<Float>?
     private var dragPosition: SIMD2<Float>?
+    private var elapsedTime: Double = 0
 
     init(size: SIMD2<Float>, seed: UInt64 = 42) {
         self.size = Self.validSize(size)
@@ -19,8 +20,8 @@ final class OceanSimulation {
 
     func update(deltaTime: Float) {
         guard deltaTime.isFinite, deltaTime > 0 else { return }
-        let elapsed = min(deltaTime, 0.1)
-        let stepCount = max(1, Int(ceil(elapsed * 60)))
+        let elapsed = min(deltaTime, 1)
+        let stepCount = max(1, Int(ceil(Double(elapsed) * 60 - 0.000_001)))
         let step = elapsed / Float(stepCount)
         for _ in 0..<stepCount {
             integrate(step: step)
@@ -46,8 +47,9 @@ final class OceanSimulation {
             let falloff = max(0, 1 - distance / radius)
             guard falloff > 0 else { continue }
             let away = normalized(offset, fallback: perpendicular(to: fish[index].velocity))
-            fish[index].velocity += away * (105 * falloff)
             fish[index].panic = min(1, max(fish[index].panic, falloff))
+            fish[index].velocity += away * (105 * falloff)
+            constrainVelocity(&fish[index])
         }
     }
 
@@ -113,7 +115,8 @@ final class OceanSimulation {
     }
 
     private func integrate(step: Float) {
-        time += step
+        elapsedTime += Double(step)
+        time = Float(elapsedTime)
         updateEffects(step: step)
 
         let previous = fish
@@ -121,18 +124,20 @@ final class OceanSimulation {
         for index in previous.indices {
             var state = previous[index]
             let parameters = Self.parameters(for: state.species)
-            let normalSpeed = parameters.speed * (0.88 + 0.18 * sin(state.phase * 1.7))
+            let normalSpeed = parameters.speed * (0.88 + 0.18 * sin(state.phase))
             let targetSpeed = normalSpeed * (1 + 1.55 * state.panic)
             let forward = normalized(state.velocity, fallback: SIMD2(1, 0))
             let side = perpendicular(to: forward)
 
             var acceleration = forward * ((targetSpeed - simd_length(state.velocity)) * 1.9)
-            acceleration += side * sin(time * parameters.wanderRate + state.phase) * parameters.wanderForce
+            let wander = Float(sin(elapsedTime * Double(parameters.wanderRate) + Double(state.phase)))
+            acceleration += side * wander * parameters.wanderForce
             acceleration += schoolingForce(for: index, states: previous)
-            acceleration += edgeForce(for: state)
             acceleration += interactionForce(for: state)
 
             let accelerationLimit = parameters.maxAcceleration * (1 + state.panic)
+            acceleration = limited(acceleration, to: accelerationLimit * 0.58)
+            acceleration += edgeForce(for: state, maximumAcceleration: accelerationLimit)
             acceleration = limited(acceleration, to: accelerationLimit)
             state.velocity += acceleration * step
 
@@ -149,7 +154,9 @@ final class OceanSimulation {
             contain(&state)
             let targetHeading = atan2(state.velocity.y, state.velocity.x)
             state.heading = approachedAngle(state.heading, targetHeading, maximumChange: parameters.turnRate * step)
-            state.phase += step * (parameters.tailRate + speed * 0.012)
+                .truncatingRemainder(dividingBy: 2 * .pi)
+            state.phase = (state.phase + step * (parameters.tailRate + speed * 0.012))
+                .truncatingRemainder(dividingBy: 2 * .pi)
             state.panic *= exp(-step / 1.35)
             if state.panic < 0.0001 { state.panic = 0 }
             next[index] = state
@@ -172,7 +179,15 @@ final class OceanSimulation {
 
     private func schoolingForce(for index: Int, states: [FishState]) -> SIMD2<Float> {
         let state = states[index]
-        let neighborhood: Float = state.species == .manta ? 0 : max(115, state.length * 1.8)
+        let schooling: (radius: Float, cohesion: Float, alignment: Float)
+        switch state.species {
+        case .silver:
+            schooling = (max(165, state.length * 2.35), 7, 15)
+        case .butterfly:
+            schooling = (max(135, state.length * 1.35), 2, 4)
+        case .clown, .tang, .manta:
+            schooling = (0, 0, 0)
+        }
         var center = SIMD2<Float>.zero
         var velocity = SIMD2<Float>.zero
         var neighborCount: Float = 0
@@ -184,43 +199,62 @@ final class OceanSimulation {
             let distanceSquared = simd_length_squared(offset)
             guard distanceSquared > 0.001 else { continue }
             let distance = sqrt(distanceSquared)
-            let separationDistance = max(38, (state.length + other.length) * 0.32)
+            let sameSilverSchool = state.species == .silver && other.species == .silver
+            let separationScale: Float = sameSilverSchool ? 0.42 : 0.55
+            let separationDistance = max(44, (state.length + other.length) * separationScale)
             if distance < separationDistance {
                 let strength = 1 - distance / separationDistance
                 separation += (offset / distance) * strength
             }
-            if other.species == state.species && distance < neighborhood {
+            if other.species == state.species && distance < schooling.radius {
                 center += other.position
                 velocity += normalized(other.velocity, fallback: SIMD2(1, 0))
                 neighborCount += 1
             }
         }
 
-        var result = separation * (state.species == .manta ? 42 : 88)
+        let separationStrength: Float = state.species == .silver ? 118 : 158
+        var result = separation * separationStrength
         if neighborCount > 0 {
             center /= neighborCount
             velocity /= neighborCount
             let cohesion = normalized(center - state.position, fallback: .zero)
             let alignment = normalized(velocity, fallback: .zero)
-            result += cohesion * 12 + alignment * 16
+            result += cohesion * schooling.cohesion + alignment * schooling.alignment
         }
         return result
     }
 
-    private func edgeForce(for state: FishState) -> SIMD2<Float> {
-        let margin = min(min(size.x, size.y) * 0.28, max(70, state.length * 0.55))
+    private func edgeForce(for state: FishState, maximumAcceleration: Float) -> SIMD2<Float> {
+        let bodyInset = min(min(size.x, size.y) * 0.24, max(16, state.length * 0.48))
         var force = SIMD2<Float>.zero
-        if state.position.x < margin {
-            force.x += squared(1 - state.position.x / margin)
-        } else if state.position.x > size.x - margin {
-            force.x -= squared(1 - (size.x - state.position.x) / margin)
+        force.x = axisEdgeForce(position: state.position.x, velocity: state.velocity.x, extent: size.x, bodyInset: bodyInset, maximumAcceleration: maximumAcceleration)
+        force.y = axisEdgeForce(position: state.position.y, velocity: state.velocity.y, extent: size.y, bodyInset: bodyInset, maximumAcceleration: maximumAcceleration)
+        return force
+    }
+
+    private func axisEdgeForce(
+        position: Float,
+        velocity: Float,
+        extent: Float,
+        bodyInset: Float,
+        maximumAcceleration: Float
+    ) -> Float {
+        let lowerSpeed = max(0, -velocity)
+        let upperSpeed = max(0, velocity)
+        let lowerMargin = bodyInset + 36 + lowerSpeed * lowerSpeed / (2 * maximumAcceleration) * 1.45
+        let upperMargin = bodyInset + 36 + upperSpeed * upperSpeed / (2 * maximumAcceleration) * 1.45
+        if position < lowerMargin {
+            let proximity = 1 - max(0, position - bodyInset) / max(1, lowerMargin - bodyInset)
+            let braking = lowerSpeed * lowerSpeed / (2 * max(4, position - bodyInset)) * 1.35
+            return min(maximumAcceleration, braking + maximumAcceleration * (0.28 + 0.72 * proximity * proximity))
         }
-        if state.position.y < margin {
-            force.y += squared(1 - state.position.y / margin)
-        } else if state.position.y > size.y - margin {
-            force.y -= squared(1 - (size.y - state.position.y) / margin)
+        if position > extent - upperMargin {
+            let proximity = 1 - max(0, extent - bodyInset - position) / max(1, upperMargin - bodyInset)
+            let braking = upperSpeed * upperSpeed / (2 * max(4, extent - bodyInset - position)) * 1.35
+            return -min(maximumAcceleration, braking + maximumAcceleration * (0.28 + 0.72 * proximity * proximity))
         }
-        return force * (state.species == .manta ? 62 : 105)
+        return 0
     }
 
     private func interactionForce(for state: FishState) -> SIMD2<Float> {
@@ -261,31 +295,50 @@ final class OceanSimulation {
             let across = normalized(offset, fallback: perpendicular(to: direction))
             fish[index].velocity += (across * 58 + direction * 18) * falloff
             fish[index].panic = min(0.7, max(fish[index].panic, falloff * 0.55))
+            constrainVelocity(&fish[index])
         }
     }
 
     private func contain(_ state: inout FishState) {
-        let inset = min(max(4, state.length * 0.08), min(size.x, size.y) * 0.08)
-        let minimum = SIMD2<Float>(repeating: inset)
-        let maximum = max(minimum, size - SIMD2<Float>(repeating: inset))
-        if state.position.x < minimum.x {
-            state.position.x = minimum.x
-            state.velocity.x = abs(state.velocity.x) * 0.65
-        } else if state.position.x > maximum.x {
-            state.position.x = maximum.x
-            state.velocity.x = -abs(state.velocity.x) * 0.65
+        if state.position.x < 0 {
+            state.position.x = 0
+            state.velocity.x = max(4, abs(state.velocity.x) * 0.2)
+        } else if state.position.x > size.x {
+            state.position.x = size.x
+            state.velocity.x = -max(4, abs(state.velocity.x) * 0.2)
         }
-        if state.position.y < minimum.y {
-            state.position.y = minimum.y
-            state.velocity.y = abs(state.velocity.y) * 0.65
-        } else if state.position.y > maximum.y {
-            state.position.y = maximum.y
-            state.velocity.y = -abs(state.velocity.y) * 0.65
+        if state.position.y < 0 {
+            state.position.y = 0
+            state.velocity.y = max(4, abs(state.velocity.y) * 0.2)
+        } else if state.position.y > size.y {
+            state.position.y = size.y
+            state.velocity.y = -max(4, abs(state.velocity.y) * 0.2)
         }
     }
 
     private func clamped(_ point: SIMD2<Float>) -> SIMD2<Float> {
-        simd_clamp(point, .zero, size)
+        guard point.x.isFinite, point.y.isFinite else { return size * 0.5 }
+        return simd_clamp(point, .zero, size)
+    }
+
+    private func constrainVelocity(_ state: inout FishState) {
+        let parameters = Self.parameters(for: state.species)
+        let maximumSpeed = parameters.speed * (1.28 + 1.7 * state.panic)
+        guard state.velocity.x.isFinite, state.velocity.y.isFinite else {
+            state.velocity = SIMD2(parameters.speed, 0)
+            return
+        }
+        state.velocity = limited(state.velocity, to: maximumSpeed)
+        let maximumAcceleration = parameters.maxAcceleration * (1 + state.panic)
+        let bodyInset = min(min(size.x, size.y) * 0.24, max(16, state.length * 0.48))
+        let leftRoom = max(0, state.position.x - bodyInset)
+        let rightRoom = max(0, size.x - bodyInset - state.position.x)
+        let bottomRoom = max(0, state.position.y - bodyInset)
+        let topRoom = max(0, size.y - bodyInset - state.position.y)
+        state.velocity.x = max(state.velocity.x, -sqrt(2 * maximumAcceleration * leftRoom / 1.45))
+        state.velocity.x = min(state.velocity.x, sqrt(2 * maximumAcceleration * rightRoom / 1.45))
+        state.velocity.y = max(state.velocity.y, -sqrt(2 * maximumAcceleration * bottomRoom / 1.45))
+        state.velocity.y = min(state.velocity.y, sqrt(2 * maximumAcceleration * topRoom / 1.45))
     }
 
     private static func validSize(_ proposed: SIMD2<Float>) -> SIMD2<Float> {
@@ -381,22 +434,23 @@ private struct SeededGenerator {
 
 private func normalized(_ vector: SIMD2<Float>, fallback: SIMD2<Float>) -> SIMD2<Float> {
     let lengthSquared = simd_length_squared(vector)
-    guard lengthSquared > 0.000001 else { return fallback }
-    return vector / sqrt(lengthSquared)
+    if lengthSquared.isFinite, lengthSquared > 0.000001 {
+        return vector / sqrt(lengthSquared)
+    }
+    let fallbackLengthSquared = simd_length_squared(fallback)
+    guard fallbackLengthSquared.isFinite, fallbackLengthSquared > 0.000001 else { return .zero }
+    return fallback / sqrt(fallbackLengthSquared)
 }
 
 private func limited(_ vector: SIMD2<Float>, to maximum: Float) -> SIMD2<Float> {
     let lengthSquared = simd_length_squared(vector)
+    guard lengthSquared.isFinite else { return .zero }
     guard lengthSquared > maximum * maximum else { return vector }
     return vector * (maximum / sqrt(lengthSquared))
 }
 
 private func perpendicular(to vector: SIMD2<Float>) -> SIMD2<Float> {
     SIMD2(-vector.y, vector.x)
-}
-
-private func squared(_ value: Float) -> Float {
-    value * value
 }
 
 private func approachedAngle(_ current: Float, _ target: Float, maximumChange: Float) -> Float {
