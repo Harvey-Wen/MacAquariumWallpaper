@@ -165,7 +165,7 @@ private enum SimulationTests {
         simulation.update(deltaTime: 0.25)
         let frame = simulation.frame(waterStrength: 0.7)
         try expect(frame.size == simulation.size, "frame size should match simulation")
-        try expect(frame.time == simulation.time, "frame time should match simulation")
+        try expect(Float(frame.time) == simulation.time, "frame time should match simulation diagnostics")
         try expect(frame.fish.count == 29, "frame should contain all fish")
         try expect(frame.waterStrength == 0.7, "frame should preserve requested water strength")
         try expect(abs(frame.time - 0.25) < 0.0001, "frame time should include the full update interval")

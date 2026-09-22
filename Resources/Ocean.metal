@@ -3,7 +3,7 @@ using namespace metal;
 
 struct FishVertex { float4 position; float4 normal; float4 detail; };
 struct FishUniforms {
-    float4 viewport; // width, height, time, water strength
+    float4 viewport; // width, height, unused, unused
     float4 placement; // x, y, length, depth
     float4 motion; // heading, phase, speed, panic
     float4 kind;
@@ -144,7 +144,7 @@ fragment float4 fishFragment(FishVarying in [[stage_in]]) {
 }
 
 struct EffectUniforms {
-    float4 viewport;
+    float4 viewport; // width, height, independently wrapped animation phases
     float4 placement; // x, y, radius, angle
     float4 style; // type: caustic, ripple, current, bubble; age, strength, seed
 };
@@ -166,15 +166,14 @@ fragment float4 effectFragment(EffectVarying in [[stage_in]], constant EffectUni
     float r = length(p);
     float alpha = 0;
     float3 color = float3(0.74, 0.92, 1.0);
-    float time = u.viewport.z;
     if (u.style.x == 0) {
         float2 q = p * 4.6;
-        q += float2(sin(q.y * 0.8 + time * 0.21 + u.style.w), cos(q.x * 0.9 - time * 0.17)) * 0.47;
+        q += float2(sin(q.y * 0.8 + u.viewport.z + u.style.w), cos(q.x * 0.9 - u.viewport.w)) * 0.47;
         float field = sin(q.x + q.y * 0.45) * cos(q.y - q.x * 0.31);
         float ridge = exp(-abs(field) * 34.0);
         alpha = ridge * pow(max(0.0, 1.0 - r), 2.2) * 0.13 * u.style.z;
     } else if (u.style.x == 1) {
-        float wobble = 0.009 * sin(atan2(p.y, p.x) * 9.0 + time * 1.4);
+        float wobble = 0.009 * sin(atan2(p.y, p.x) * 9.0 + u.viewport.z);
         float ring = exp(-pow((r - 0.83 + wobble) / 0.014, 2.0));
         float inner = exp(-pow((r - 0.68 + wobble) / 0.021, 2.0));
         alpha = (ring + inner * 0.40) * u.style.z * 0.22 * pow(max(0.0, 1.0 - u.style.y / 2.8), 1.6);

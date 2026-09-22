@@ -112,6 +112,35 @@ struct RenderTests {
             checked += 1
         }
         precondition(checked > 1_000)
+        // Fish are outside the image: only water, ripple and bubble pixels can change.
+        let sevenDays = 7.0 * 24 * 60 * 60
+        var water = OceanFrame(size: SIMD2(640, 400), time: sevenDays,
+                               fish: [FishState(id: 0, species: .silver, position: SIMD2(-1000, -1000), velocity: .zero, heading: 0, length: 50, depth: 0, phase: 0, panic: 0)],
+                               ripples: [Ripple(position: SIMD2(320, 200), age: 1, strength: 1.8)], currents: [], waterStrength: 1)
+        var previous = try renderer.renderRGBA(frame: water, width: 640, height: 400)
+        var minimumChanged = Int.max
+        for step in 1...12 {
+            water.time = sevenDays + Double(step) / 30
+            let next = try renderer.renderRGBA(frame: water, width: 640, height: 400)
+            let changedBytes = zip(previous, next).filter { $0 != $1 }.count
+            precondition(changedBytes > 100, "Water must advance every 30 FPS frame after seven days, without Float-time plateaus.")
+            minimumChanged = min(minimumChanged, changedBytes)
+            previous = next
+        }
+        var largestBoundaryDelta = 0.0
+        for frequency in [0.21, 0.17, 1.4] {
+            let boundary = ceil(sevenDays * frequency / (2 * .pi)) * (2 * .pi) / frequency
+            water.time = boundary - 1.0 / 60
+            let before = try renderer.renderRGBA(frame: water, width: 640, height: 400)
+            water.time = boundary + 1.0 / 60
+            let after = try renderer.renderRGBA(frame: water, width: 640, height: 400)
+            let difference = zip(before, after).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
+            let coverage = stride(from: 3, to: before.count, by: 4).reduce(0) { $0 + Int(before[$1]) }
+            let relativeDifference = Double(difference) / Double(max(1, coverage * 4))
+            precondition(relativeDifference < 0.05, "Each water frequency must wrap continuously at its own phase boundary.")
+            largestBoundaryDelta = max(largestBoundaryDelta, relativeDifference)
+        }
+        print("PASS long-running water: 12 consecutive 30 FPS steps at seven days each change at least \(minimumChanged) bytes; maximum phase-boundary delta \(largestBoundaryDelta).")
         print("PASS renderer: empty alpha = 0; 29 fish; visible \(visible), clear \(clear), translucent \(translucent); animation changed \(changed) bytes; premultiplied RGB valid; all five species animate.")
         print("PASS geometry: finite vertices for all species; depth ordering preserves \(checked) foreground pixels.")
         print("Samples: \(output.path)")

@@ -106,7 +106,7 @@ final class OceanSimulation {
     func frame(waterStrength: Float) -> OceanFrame {
         OceanFrame(
             size: size,
-            time: time,
+            time: elapsedTime,
             fish: fish,
             ripples: ripples,
             currents: currents,

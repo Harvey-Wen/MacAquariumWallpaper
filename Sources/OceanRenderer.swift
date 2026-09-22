@@ -113,13 +113,21 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-        let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), frame.time, frame.waterStrength)
+        let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), 0, 0)
+        func phase(_ frequency: Double) -> Float {
+            Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi))
+        }
+        let causticPhases = SIMD2<Float>(phase(0.21), phase(0.17))
+        let ripplePhase = phase(1.4)
         encoder.setCullMode(.none)
         encoder.setRenderPipelineState(effectPipeline)
         encoder.setDepthStencilState(effectDepth)
         func effect(at position: SIMD2<Float>, radius: Float, angle: Float = 0,
                     type: Float, age: Float = 0, strength: Float = 1, seed: Float = 0) {
-            var uniforms = EffectUniforms(viewport: viewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed))
+            var effectViewport = viewport
+            effectViewport.z = type == 0 ? causticPhases.x : type == 1 ? ripplePhase : 0
+            effectViewport.w = type == 0 ? causticPhases.y : 0
+            var uniforms = EffectUniforms(viewport: effectViewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed))
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -130,15 +138,14 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
                 let seed = Float(i)
                 let x = (0.08 + (seed * 0.173).truncatingRemainder(dividingBy: 0.88)) * frame.size.x
                 let y = (0.13 + (seed * 0.293).truncatingRemainder(dividingBy: 0.76)) * frame.size.y
-                let drift = SIMD2<Float>(sin(frame.time * 0.09 + seed) * 30, cos(frame.time * 0.07 + seed * 2) * 18)
+                let drift = SIMD2<Float>(Float(sin(frame.time * 0.09 + Double(i)) * 30), Float(cos(frame.time * 0.07 + Double(i) * 2) * 18))
                 effect(at: SIMD2(x, y) + drift, radius: min(frame.size.x, frame.size.y) * (0.15 + seed * 0.006), type: 0, strength: min(frame.waterStrength, 1), seed: seed)
             }
             for i in 0..<8 {
-                let seed = Float(i)
-                let cycle = (frame.time * (0.019 + seed * 0.001) + seed * 0.137).truncatingRemainder(dividingBy: 1)
-                let x = (0.08 + (seed * 0.191).truncatingRemainder(dividingBy: 0.86)) * frame.size.x + sin(frame.time * 0.4 + seed * 2) * 9
-                let fade = min(cycle * 8, (1 - cycle) * 8, 1)
-                effect(at: SIMD2(x, cycle * frame.size.y), radius: 2.4 + Float(i % 3), type: 3, strength: fade * frame.waterStrength * 0.65)
+                let cycle = (frame.time * (0.019 + Double(i) * 0.001) + Double(i) * 0.137).truncatingRemainder(dividingBy: 1)
+                let x = (0.08 + (Double(i) * 0.191).truncatingRemainder(dividingBy: 0.86)) * Double(frame.size.x) + sin(frame.time * 0.4 + Double(i) * 2) * 9
+                let fade = Float(min(cycle * 8, (1 - cycle) * 8, 1))
+                effect(at: SIMD2(Float(x), Float(cycle * Double(frame.size.y))), radius: 2.4 + Float(i % 3), type: 3, strength: fade * frame.waterStrength * 0.65)
             }
         }
         for ripple in frame.ripples.prefix(24) where ripple.age >= 0 && ripple.age < 2.8 {

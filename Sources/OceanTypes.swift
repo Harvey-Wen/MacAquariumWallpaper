@@ -32,7 +32,7 @@ struct CurrentStroke {
 
 struct OceanFrame {
     var size: SIMD2<Float>
-    var time: Float
+    var time: Double
     var fish: [FishState]
     var ripples: [Ripple]
     var currents: [CurrentStroke]
