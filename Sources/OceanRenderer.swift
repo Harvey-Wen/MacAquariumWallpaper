@@ -132,15 +132,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
-        if !frame.fish.isEmpty && frame.waterStrength > 0 {
-            // Sparse patches leave most of the original wallpaper completely untouched.
-            for i in 0..<7 {
-                let seed = Float(i)
-                let x = (0.08 + (seed * 0.173).truncatingRemainder(dividingBy: 0.88)) * frame.size.x
-                let y = (0.13 + (seed * 0.293).truncatingRemainder(dividingBy: 0.76)) * frame.size.y
-                let drift = SIMD2<Float>(Float(sin(frame.time * 0.09 + Double(i)) * 30), Float(cos(frame.time * 0.07 + Double(i) * 2) * 18))
-                effect(at: SIMD2(x, y) + drift, radius: min(frame.size.x, frame.size.y) * (0.15 + seed * 0.006), type: 0, strength: min(frame.waterStrength, 1), seed: seed)
-            }
+        if frame.waterStrength > 0 {
+            // The water is a continuous environment, including when there are no fish.
+            effect(at: frame.size * 0.5, radius: 1, type: 0, strength: min(frame.waterStrength, 1))
             for i in 0..<8 {
                 let cycle = (frame.time * (0.019 + Double(i) * 0.001) + Double(i) * 0.137).truncatingRemainder(dividingBy: 1)
                 let x = (0.08 + (Double(i) * 0.191).truncatingRemainder(dividingBy: 0.86)) * Double(frame.size.x) + sin(frame.time * 0.4 + Double(i) * 2) * 9
@@ -167,7 +161,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             var uniforms = FishUniforms(viewport: viewport,
                                         placement: SIMD4(fish.position.x, fish.position.y, fish.length, min(max(fish.depth, 0), 1)),
                                         motion: SIMD4(fish.heading, fish.phase, simd_length(fish.velocity), fish.panic),
-                                        kind: SIMD4(Float(fish.species.rawValue), 0, 0, 0))
+                                        kind: SIMD4(Float(fish.species.rawValue), causticPhases.x, causticPhases.y, min(max(frame.waterStrength, 0), 1)))
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: count)

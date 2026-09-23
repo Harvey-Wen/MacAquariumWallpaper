@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import MetalKit
 import simd
 
@@ -20,6 +21,37 @@ struct RenderTests {
         }
         let empty = try renderer.renderRGBA(frame: .empty, width: 320, height: 200)
         precondition(empty.allSatisfy { $0 == 0 }, "An empty scene must preserve zero RGB and alpha.")
+        var waterOnly = OceanFrame.empty
+        waterOnly.size = SIMD2(640, 400)
+        waterOnly.time = 3.2
+        waterOnly.waterStrength = 0.45
+        let waterPixels = try renderer.renderRGBA(frame: waterOnly, width: 640, height: 400)
+        let waterAlpha = stride(from: 3, to: waterPixels.count, by: 4).map { waterPixels[$0] }
+        print("Water-only visible pixels: \(waterAlpha.filter { $0 > 0 }.count)")
+        fflush(stdout)
+        precondition(waterAlpha.allSatisfy { $0 > 0 && $0 < 255 }, "Water must cover the viewport while keeping the wallpaper visible without any fish.")
+        var strengths: [Double] = []
+        for strength: Float in [0.25, 0.45, 0.75] {
+            waterOnly.waterStrength = strength
+            let pixels = try renderer.renderRGBA(frame: waterOnly, width: 640, height: 400)
+            let alpha = stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] }
+            let meanAlpha = Double(alpha.reduce(0) { $0 + Int($1) }) / Double(alpha.count * 255)
+            precondition(alpha.allSatisfy { $0 < 255 } && meanAlpha < 0.5, "Even strong water must leave the wallpaper visible and retain most of its average contribution.")
+            validatePremultiplication(pixels)
+            strengths.append(meanAlpha)
+        }
+        precondition(strengths[0] < strengths[1] && strengths[1] < strengths[2], "Each water-strength setting must visibly increase the environment contribution.")
+        waterOnly.waterStrength = 0
+        let disabledWater = try renderer.renderRGBA(frame: waterOnly, width: 640, height: 400)
+        precondition(disabledWater.allSatisfy { $0 == 0 }, "Disabling water in a scene without content must restore zero RGB and alpha.")
+        waterOnly.waterStrength = 0.45
+        waterOnly.time += 0.57
+        let animatedWater = try renderer.renderRGBA(frame: waterOnly, width: 640, height: 400)
+        let waterChanged = zip(waterPixels, animatedWater).filter { $0 != $1 }.count
+        precondition(waterChanged > 100, "The underwater environment must animate when all fish are hidden.")
+        waterOnly.time = 3.2
+        try renderer.writePNG(frame: waterOnly, width: 1440, height: 900, to: output.appendingPathComponent("water-only-dark.png"), background: SIMD3(0.035, 0.07, 0.10))
+        try renderer.writePNG(frame: waterOnly, width: 1440, height: 900, to: output.appendingPathComponent("water-only-light.png"), background: SIMD3(0.92, 0.93, 0.89))
         var frame = OceanFrame(size: SIMD2(1440, 900), time: 3.2, fish: [], ripples: [], currents: [], waterStrength: 0.45)
         for i in 0..<18 {
             let row = i / 6, column = i % 6
@@ -45,14 +77,19 @@ struct RenderTests {
         let visible = alpha.filter { $0 > 0 }.count
         let clear = alpha.filter { $0 == 0 }.count
         let translucent = alpha.filter { $0 > 0 && $0 < 255 }.count
-        precondition(visible > 10_000 && clear > alpha.count * 7 / 10, "Fish should be visible and most of the desktop fully clear.")
-        precondition(translucent > 1_000, "Transparent fins, antialiasing and water should produce fractional alpha.")
-        for index in stride(from: 0, to: first.count, by: 4) {
-            precondition(first[index] <= first[index + 3] && first[index + 1] <= first[index + 3] && first[index + 2] <= first[index + 3], "Premultiplied output must not exceed alpha.")
-        }
+        precondition(visible == alpha.count && translucent > alpha.count / 2, "The environment must span the viewport while most pixels still transmit the wallpaper.")
+        validatePremultiplication(first)
         try renderer.writePNG(frame: frame, width: 1440, height: 900, to: output.appendingPathComponent("ocean-transparent.png"))
         try renderer.writePNG(frame: frame, width: 1440, height: 900, to: output.appendingPathComponent("ocean-dark.png"), background: SIMD3(0.035, 0.07, 0.10))
         try renderer.writePNG(frame: frame, width: 1440, height: 900, to: output.appendingPathComponent("ocean-light.png"), background: SIMD3(0.92, 0.93, 0.89))
+        try compositeBitmap(first, width: 1440, height: 900).representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("ocean-complex.png"))
+        let waterSample = try renderer.renderRGBA(frame: waterOnly, width: 1440, height: 900)
+        try compositeBitmap(waterSample, width: 1440, height: 900).representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("water-only-complex.png"))
+        try compositeBitmap([UInt8](repeating: 0, count: first.count), width: 1440, height: 900).representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("background-reference.png"))
+        if CommandLine.arguments.contains("--preview") {
+            try writePreview(renderer: renderer, frame: waterOnly, to: output.appendingPathComponent("water-only-preview.gif"))
+            try writePreview(renderer: renderer, frame: frame, to: output.appendingPathComponent("ocean-preview.gif"))
+        }
         frame.time += 0.57
         for index in frame.fish.indices { frame.fish[index].phase += 0.57 * 4.8 }
         let animated = try renderer.renderRGBA(frame: frame, width: 1440, height: 900)
@@ -112,10 +149,10 @@ struct RenderTests {
             checked += 1
         }
         precondition(checked > 1_000)
-        // Fish are outside the image: only water, ripple and bubble pixels can change.
+        // No fish: only water, ripple and bubble pixels can change.
         let sevenDays = 7.0 * 24 * 60 * 60
         var water = OceanFrame(size: SIMD2(640, 400), time: sevenDays,
-                               fish: [FishState(id: 0, species: .silver, position: SIMD2(-1000, -1000), velocity: .zero, heading: 0, length: 50, depth: 0, phase: 0, panic: 0)],
+                               fish: [],
                                ripples: [Ripple(position: SIMD2(320, 200), age: 1, strength: 1.8)], currents: [], waterStrength: 1)
         var previous = try renderer.renderRGBA(frame: water, width: 640, height: 400)
         var minimumChanged = Int.max
@@ -141,8 +178,71 @@ struct RenderTests {
             largestBoundaryDelta = max(largestBoundaryDelta, relativeDifference)
         }
         print("PASS long-running water: 12 consecutive 30 FPS steps at seven days each change at least \(minimumChanged) bytes; maximum phase-boundary delta \(largestBoundaryDelta).")
+        print("PASS underwater environment: no fish, animated \(waterChanged) bytes; mean alpha at strengths 0.25/0.45/0.75 = \(strengths); disabled water RGBA = 0.")
         print("PASS renderer: empty alpha = 0; 29 fish; visible \(visible), clear \(clear), translucent \(translucent); animation changed \(changed) bytes; premultiplied RGB valid; all five species animate.")
         print("PASS geometry: finite vertices for all species; depth ordering preserves \(checked) foreground pixels.")
         print("Samples: \(output.path)")
+    }
+
+    static func validatePremultiplication(_ pixels: [UInt8]) {
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            precondition(pixels[index] <= pixels[index + 3] && pixels[index + 1] <= pixels[index + 3] && pixels[index + 2] <= pixels[index + 3], "Premultiplied output must not exceed alpha.")
+        }
+    }
+
+    // A synthetic landscape exercises dark details, bright sky and multiple colors without reading the desktop.
+    static func compositeBitmap(_ foreground: [UInt8], width: Int, height: Int) -> NSBitmapImageRep {
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bitmapFormat: .alphaNonpremultiplied, bytesPerRow: width * 4, bitsPerPixel: 32)!
+        let pixels = bitmap.bitmapData!
+        for y in 0..<height {
+            for x in 0..<width {
+                let u = Float(x) / Float(width), v = Float(y) / Float(height)
+                var background = SIMD3<Float>(0.87 - u * 0.39, 0.69 + u * 0.05, 0.48 + u * 0.36) * (1 - v * 0.35)
+                for layer in 0..<3 {
+                    let level = Float(layer)
+                    let ridge = 0.39 + level * 0.18 + sin(u * (7 + level * 3) + level) * 0.10 + sin(u * 23 + level) * 0.025
+                    if v > ridge {
+                        let detail = 0.025 * sin(u * 180 + v * 35) * sin(v * 140)
+                        background = SIMD3<Float>(0.20 - level * 0.05, 0.33 - level * 0.075, 0.36 - level * 0.075) + SIMD3(repeating: detail)
+                    }
+                }
+                let index = (y * width + x) * 4
+                let alpha = Float(foreground[index + 3]) / 255
+                for channel in 0..<3 {
+                    pixels[index + channel] = UInt8(min(255, max(0, Float(foreground[index + channel]) + background[channel] * (1 - alpha) * 255)).rounded())
+                }
+                pixels[index + 3] = 255
+            }
+        }
+        return bitmap
+    }
+
+    static func writePreview(renderer: OceanRenderer, frame: OceanFrame, to url: URL) throws {
+        let width = 640, height = 400, fps = 15, frameCount = 10 * fps
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "com.compuserve.gif" as CFString, frameCount, nil) else {
+            throw OceanRenderError.unavailable("无法创建动态预览。")
+        }
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for index in 0..<frameCount {
+            let elapsed = Double(index) / Double(fps)
+            var sample = frame
+            sample.time += elapsed
+            for fish in sample.fish.indices {
+                sample.fish[fish].phase += Float(elapsed) * 4.8
+                sample.fish[fish].position += sample.fish[fish].velocity * Float(elapsed)
+            }
+            for ripple in sample.ripples.indices { sample.ripples[ripple].age += Float(elapsed) }
+            for current in sample.currents.indices { sample.currents[current].age += Float(elapsed) }
+            let pixels = try renderer.renderRGBA(frame: sample, width: width, height: height)
+            let image = compositeBitmap(pixels, width: width, height: height).cgImage!
+            // GIF stores centiseconds; alternate 6/7-centisecond delays to preserve the full ten-second duration.
+            let delay = (round(Double(index + 1) * 100 / Double(fps)) - round(Double(index) * 100 / Double(fps))) / 100
+            CGImageDestinationAddImage(destination, image, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay]] as CFDictionary)
+        }
+        precondition(CGImageDestinationFinalize(destination), "Animated preview must encode successfully.")
+        print("Preview: \(url.path) (10 seconds, 15 FPS)")
+        fflush(stdout)
     }
 }

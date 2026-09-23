@@ -38,5 +38,5 @@ struct OceanFrame {
     var currents: [CurrentStroke]
     var waterStrength: Float
 
-    static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], currents: [], waterStrength: 0.45)
+    static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], currents: [], waterStrength: 0)
 }

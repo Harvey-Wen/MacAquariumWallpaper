@@ -15,7 +15,58 @@ struct FishVarying {
     float4 detail;
     float species;
     float depth;
+    float2 waterPoint;
+    float3 water;
 };
+
+// A smoothly warped cellular field gives connected light ribbons rather than
+// isolated rings. Both phases enter through sin/cos so independent wraps agree.
+float waterCaustic(float2 p, float2 phase) {
+    p += float2(sin(p.y * 1.17 + phase.x), cos(p.x * 0.93 - phase.y)) * 0.55;
+    p += float2(sin(p.y * 2.4 + cos(p.x * 1.8 + phase.x) + phase.y),
+                cos(p.x * 2.3 + sin(p.y * 1.9 - phase.y) - phase.x)) * 0.34;
+    float2 cell = floor(p), local = fract(p);
+    float nearest = 8.0, second = 8.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float2 neighbor = float2(x, y);
+            float2 id = cell + neighbor;
+            float2 seed = fract(sin(float2(dot(id, float2(127.1, 311.7)),
+                                           dot(id, float2(269.5, 183.3)))) * 43758.5453);
+            float2 center = 0.5 + 0.28 * sin(seed * 6.2831853 + float2(phase.x, -phase.y));
+            float2 delta = neighbor + center - local;
+            float distance = dot(delta, delta);
+            if (distance < nearest) { second = nearest; nearest = distance; }
+            else second = min(second, distance);
+        }
+    }
+    float edge = sqrt(second) - sqrt(nearest);
+    float width = max(fwidth(edge), 0.012);
+    float core = 1.0 - smoothstep(0.006, 0.045 + width, edge);
+    float glow = 1.0 - smoothstep(0.02, 0.16 + width, edge);
+    float focus = 0.62 + 0.38 * sin(p.x * 2.1 + p.y * 1.7 + phase.x) *
+                              sin(p.y * 1.3 - phase.y);
+    return (core * 0.72 + glow * 0.28) * focus;
+}
+
+float waterRays(float2 uv, float2 phase) {
+    float depth = 1.0 - uv.y;
+    float rays = 0;
+    for (int i = 0; i < 4; ++i) {
+        float seed = float(i);
+        float origin = 0.08 + seed * 0.28;
+        float sway = 0.018 * sin(phase.x + seed * 2.3) + 0.009 * cos(phase.y - seed);
+        float center = origin + depth * (0.10 + seed * 0.025) + sway;
+        float width = 0.014 + depth * 0.075;
+        float distance = (uv.x - center) / width;
+        rays += exp(-distance * distance) * (0.7 + 0.3 * sin(phase.y + seed * 1.7));
+    }
+    return rays * exp(-depth * 1.7);
+}
+
+float2 waterCoordinates(float2 uv, float aspect) {
+    return float2(uv.x * aspect, uv.y) * 6.4;
+}
 
 vertex FishVarying fishVertex(uint id [[vertex_id]], const device FishVertex *vertices [[buffer(0)]],
                              constant FishUniforms &u [[buffer(1)]]) {
@@ -57,6 +108,10 @@ vertex FishVarying fishVertex(uint id [[vertex_id]], const device FishVertex *ve
     out.detail = v.detail;
     out.species = species;
     out.depth = u.placement.w;
+    out.waterPoint = screen / u.viewport.xy;
+    out.water = u.kind.yzw;
+    // x is aspect; keep placement and light in the same normalized screen space.
+    out.detail.z = u.viewport.x / u.viewport.y;
     return out;
 }
 
@@ -140,6 +195,15 @@ fragment float4 fishFragment(FishVarying in [[stage_in]]) {
     float rimLight = pow(1.0 - abs(n.z), 3.0) * 0.12;
     color += float3(0.20, 0.44, 0.53) * rimLight;
     color = mix(color, color * float3(0.76, 0.87, 0.95), in.depth * 0.35);
+    if (in.water.z > 0) {
+        float2 phase = in.water.xy;
+        float caustic = waterCaustic(waterCoordinates(in.waterPoint, in.detail.z), phase);
+        float rays = waterRays(in.waterPoint, phase);
+        float amount = min(in.water.z / 0.45, 1.65);
+        float haze = (0.05 + in.depth * 0.19) * amount;
+        color = mix(color, float3(0.06, 0.32, 0.40), haze);
+        color += float3(0.46, 0.77, 0.80) * (caustic * 0.16 + rays * 0.08) * amount * max(n.y * 0.5 + 0.5, 0.0);
+    }
     return float4(clamp(color, 0.0, 1.0) * alpha, alpha);
 }
 
@@ -157,7 +221,8 @@ vertex EffectVarying effectVertex(uint id [[vertex_id]], constant EffectUniforms
     float c = cos(u.placement.w), s = sin(u.placement.w);
     point = float2(c * point.x - s * point.y, s * point.x + c * point.y);
     EffectVarying out;
-    out.position = float4((u.placement.xy + point) / u.viewport.xy * 2.0 - 1.0, 0.98, 1);
+    out.position = u.style.x == 0 ? float4(uv, 0.98, 1) :
+        float4((u.placement.xy + point) / u.viewport.xy * 2.0 - 1.0, 0.98, 1);
     out.uv = uv;
     return out;
 }
@@ -167,11 +232,23 @@ fragment float4 effectFragment(EffectVarying in [[stage_in]], constant EffectUni
     float alpha = 0;
     float3 color = float3(0.74, 0.92, 1.0);
     if (u.style.x == 0) {
-        float2 q = p * 4.6;
-        q += float2(sin(q.y * 0.8 + u.viewport.z + u.style.w), cos(q.x * 0.9 - u.viewport.w)) * 0.47;
-        float field = sin(q.x + q.y * 0.45) * cos(q.y - q.x * 0.31);
-        float ridge = exp(-abs(field) * 34.0);
-        alpha = ridge * pow(max(0.0, 1.0 - r), 2.2) * 0.13 * u.style.z;
+        float2 uv = p * 0.5 + 0.5;
+        float depth = 1.0 - uv.y;
+        float aspect = u.viewport.x / u.viewport.y;
+        float2 phase = u.viewport.zw;
+        float caustic = waterCaustic(waterCoordinates(uv, aspect), phase);
+        // Compress the top light network into a receding surface, with no horizon edge.
+        float2 surfacePoint = float2((uv.x - 0.5) * aspect * 2.2, 1.3) / (depth + 0.18);
+        float surface = waterCaustic(surfacePoint, phase) * exp(-depth * 13.0);
+        float rays = waterRays(uv, phase);
+        float amount = min(u.style.z / 0.45, 1.65);
+        float haze = (0.075 + 0.15 * pow(depth, 0.8)) * amount;
+        float light = (surface * 0.48 + rays * 0.19 + caustic * (0.07 + depth * 0.11)) * amount;
+        light = min(light, 0.52);
+        float3 tint = mix(float3(0.055, 0.48, 0.57), float3(0.015, 0.18, 0.29), depth);
+        alpha = haze + light * (1.0 - haze);
+        float3 premultiplied = tint * haze * (1.0 - light) + float3(0.61, 0.91, 0.96) * light;
+        return float4(premultiplied, alpha);
     } else if (u.style.x == 1) {
         float wobble = 0.009 * sin(atan2(p.y, p.x) * 9.0 + u.viewport.z);
         float ring = exp(-pow((r - 0.83 + wobble) / 0.014, 2.0));
