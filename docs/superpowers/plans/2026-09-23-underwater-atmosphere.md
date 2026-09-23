@@ -14,7 +14,7 @@
 - 不改窗口层级、输入、模拟行为或增加其他生物、海床、控制项。
 - GPU 时间使用 Double 计算后分别折返相位，避免长期运行精度和周期跳变。
 
-## Task 1: 环境、鱼身受光与渲染回归
+## Task 1: 环境、鱼身受光与渲染回归（已完成，25221b4）
 
 **Files:** Resources/Ocean.metal、Sources/OceanRenderer.swift、Sources/OceanTypes.swift、Tests/RenderTests.swift。
 
