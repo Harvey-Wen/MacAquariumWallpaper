@@ -20,7 +20,7 @@
 
 **Interfaces:** 保持 OceanFrame 的字段不变；.empty 改为 waterStrength: 0，表示真正空场景。水效使用现有 EffectUniforms.viewport.zw 两个相位，环境函数在着色器中共享；FishUniforms.kind.yzw 传递同样相位和强度。
 
-- [ ] 先保留基线渲染测试结果，再用无鱼且 waterStrength: 0.45 的画面复现水效消失：
+- [x] 先保留基线渲染测试结果，再用无鱼且 waterStrength: 0.45 的画面复现水效消失：
 
 ```swift
 var waterOnly = OceanFrame.empty
@@ -29,7 +29,7 @@ let pixels = try renderer.renderRGBA(frame: waterOnly, width: 640, height: 400)
 precondition(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 0 })
 ```
 
-- [ ] 将背景水效改为与鱼数量无关的全视口绘制，保持气泡数量和交互上限；空场景水强度为零：
+- [x] 将背景水效改为与鱼数量无关的全视口绘制，保持气泡数量和交互上限；空场景水强度为零：
 
 ```swift
 if frame.waterStrength > 0 {
@@ -38,21 +38,21 @@ if frame.waterStrength > 0 {
 }
 ```
 
-- [ ] 在 effectVertex 的 type == 0 分支直接以四角覆盖视口；effectFragment 生成顶部透视波纹、下射光、形变网状焦散与深度渐变水色，预乘 alpha 输出。所有周期项只通过 sin/cos 消费独立相位。
-- [ ] 让 fishFragment 使用同一屏幕空间光纹与水雾；强度为零时维持既有鱼身渲染，避免破坏独立鱼动画测试。
-- [ ] 回归无鱼水效、关闭归零、强度变化、背景可见、预乘 alpha、鱼动画、前后遮挡及第 7 天/周期边界连续性。
-- [ ] 输出无鱼/含鱼、深色/浅色/复杂测试背景样张，并生成至少 10 秒动态预览人工检查；视觉不足则只调节环境参数和光纹。
-- [ ] 运行 `zsh scripts/test-renderer.sh`，通过后提交本模块。
+- [x] 在 effectVertex 的 type == 0 分支直接以四角覆盖视口；effectFragment 生成顶部透视波纹、下射光、形变网状焦散与深度渐变水色，预乘 alpha 输出。所有周期项只通过 sin/cos 消费独立相位。
+- [x] 让 fishFragment 使用同一屏幕空间光纹与水雾；强度为零时维持既有鱼身渲染，避免破坏独立鱼动画测试。
+- [x] 回归无鱼水效、关闭归零、强度变化、背景可见、预乘 alpha、鱼动画、前后遮挡及第 7 天/周期边界连续性。
+- [x] 输出无鱼/含鱼、深色/浅色/复杂测试背景样张，并生成至少 10 秒动态预览人工检查；视觉不足则只调节环境参数和光纹。
+- [x] 运行 `zsh scripts/test-renderer.sh`，通过后提交本模块。
 
-## Task 2: 桌面集成与交付
+## Task 2: 桌面集成与交付（已完成）
 
 **Files:** README.md、docs/verification.md、task_plan.md、progress.md、findings.md。
 
-- [ ] 执行 `bash scripts/test-simulation.sh`、`bash scripts/test-input.sh`、`bash scripts/test-desktop.sh` 和 `bash scripts/build.sh`。
-- [ ] 独立审查修改的渲染逻辑与验收证据；修复真实缺陷并重跑对应检查。
-- [ ] 将已验证提交快进到原工作目录；退出原应用实例、构建并启动新版，检查诊断中的持续帧计数、29 只鱼、输入和窗口属性。
-- [ ] 更新说明：默认存在淡水色层，取消“无鱼处完全透明”的旧描述；真实背景折射仍不支持。说明新测试数据与未覆盖人工场景，不把历史性能数值当作本次测量。
-- [ ] 提交交付文档，提供应用路径和效果预览。
+- [x] 执行 `bash scripts/test-simulation.sh`、`bash scripts/test-input.sh`、`bash scripts/test-desktop.sh` 和 `bash scripts/build.sh`。
+- [x] 独立审查修改的渲染逻辑与验收证据；修复真实缺陷并重跑对应检查。
+- [x] 将已验证提交快进到原工作目录；退出原应用实例、构建并启动新版，检查诊断中的持续帧计数、29 只鱼、输入和窗口属性。
+- [x] 更新说明：默认存在淡水色层，取消“无鱼处完全透明”的旧描述；真实背景折射仍不支持。说明新测试数据与未覆盖人工场景，不把历史性能数值当作本次测量。
+- [x] 提交交付文档，提供应用路径和效果预览。
 
 ## 自查
 
