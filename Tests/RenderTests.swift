@@ -113,8 +113,11 @@ import ImageIO
             let url=output.appendingPathComponent("pond-preview.gif")
             let destination=CGImageDestinationCreateWithURL(url as CFURL,"com.compuserve.gif" as CFString,60,nil)!
             CGImageDestinationSetProperties(destination,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFLoopCount:0]] as CFDictionary)
-            for _ in 0..<60 {
+            for index in 0..<60 {
                 simulation.update(deltaTime: 1.0/15)
+                if index % 15 == 0 || index == 59 {
+                    try renderer.writePNG(frame: simulation.frame(waterStrength: 0.45),width: 1600,height: 1000,to: output.appendingPathComponent("preview-frame-\(index).png"))
+                }
                 let bytes=try renderer.renderRGBA(frame: simulation.frame(waterStrength: 0.45),width: 800,height: 500)
                 let data=Data(bytes) as CFData
                 let image=CGImage(width:800,height:500,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:3200,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:data)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!

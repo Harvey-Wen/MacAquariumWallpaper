@@ -26,8 +26,40 @@ struct FishMesh {
             return v(SIMD3(x, w * sin(a), w * 0.58 * cos(a)), simd_normalize(SIMD3(0.15, sin(a), cos(a) * 1.7)), 0, SIMD2(x, sin(a)))
         }
         func fin(_ root: SIMD3<Float>, _ edge: [SIMD3<Float>], _ material: Float) {
+            // Smooth the membrane outline and subdivide it so the stroke bends,
+            // rather than rotating a handful of rigid triangular fins.
+            var outline: [SIMD3<Float>] = []
             for i in 0..<(edge.count - 1) {
-                vertices += [v(root, SIMD3(0,0,1), material, SIMD2(0,0)), v(edge[i], SIMD3(0,0,1), material, SIMD2(Float(i),1)), v(edge[i+1], SIMD3(0,0,1), material, SIMD2(Float(i+1),1))]
+                let a = edge[max(0, i - 1)], b = edge[i]
+                let c = edge[i + 1], d = edge[min(edge.count - 1, i + 2)]
+                for step in 0..<6 {
+                    let t = Float(step) / 6
+                    let linear = (c - a) * t
+                    var quadratic: SIMD3<Float> = a * 2
+                    quadratic -= b * 5
+                    quadratic += c * 4
+                    quadratic -= d
+                    var cubic: SIMD3<Float> = -a
+                    cubic += b * 3
+                    cubic -= c * 3
+                    cubic += d
+                    var point: SIMD3<Float> = b * 2 + linear
+                    point += quadratic * (t * t)
+                    point += cubic * (t * t * t)
+                    outline.append(point * 0.5)
+                }
+            }
+            outline.append(edge.last!)
+            for i in 0..<(outline.count - 1) {
+                for row in 0..<6 {
+                    let a = Float(row) / 6, b = Float(row + 1) / 6
+                    let u = Float(i) / Float(outline.count - 1), w = Float(i + 1) / Float(outline.count - 1)
+                    let p0 = v(root + (outline[i] - root) * a, SIMD3(0,0,1), material, SIMD2(u,a))
+                    let p1 = v(root + (outline[i] - root) * b, SIMD3(0,0,1), material, SIMD2(u,b))
+                    let p2 = v(root + (outline[i+1] - root) * b, SIMD3(0,0,1), material, SIMD2(w,b))
+                    let p3 = v(root + (outline[i+1] - root) * a, SIMD3(0,0,1), material, SIMD2(w,a))
+                    vertices += [p0,p1,p2,p0,p2,p3]
+                }
             }
         }
         fin(SIMD3(-0.29,0,0), [SIMD3(-0.54,0.13,0),SIMD3(-0.52,0.065,0),SIMD3(-0.43,0,0),SIMD3(-0.52,-0.065,0),SIMD3(-0.54,-0.13,0)], 1)

@@ -23,36 +23,45 @@ vertex VertexOut fishVertex(uint id [[vertex_id]], const device FishVertex *mesh
     if(v.detail.x==2) p.y += sign(p.y)*sin(u.motion.y+1.2)*v.detail.w*0.025;
     float c=cos(u.motion.x), s=sin(u.motion.x);
     float2 point=u.placement.xy + float2(c*p.x-s*p.y,s*p.x+c*p.y)*u.placement.z;
-    if(u.motion.z>0.5) point += float2(3,-5)*(0.4+u.placement.w);
+    if(u.motion.z>0.5) point = u.placement.xy + (point-u.placement.xy)*1.09 + float2(2,-3)*(0.4+u.placement.w);
     VertexOut o; o.position=float4(point/u.viewport.xy*2-1, 0.2+u.placement.w*0.6-p.z*0.1, 1);
     o.point=point; o.local=v.position.xyz; o.normal=v.normal.xyz; o.detail=v.detail; return o;
 }
 fragment float4 fishFragment(VertexOut in [[stage_in]], constant FishUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
     float water=maskAt(in.point,u.viewport.xy,mask); if(water<=0) discard_fragment();
-    if(u.motion.z>0.5) return float4(float3(0.005,0.016,0.009)*0.14,0.14)*water;
+    if(u.motion.z>0.5) {
+        float alpha=0.09*smoothstep(0.05,0.75,abs(in.normal.z))*water;
+        return float4(float3(0.005,0.016,0.009)*alpha,alpha);
+    }
     float id=u.kind.x, kind=fmod(id,7.0);
-    float2 p=float2(in.local.x*8, in.local.y*22);
-    float patches=noise(p+float2(id*7, id*3))+0.34*noise(p*2.7+id);
+    float2 p=float2(in.local.x*6.7, in.local.y*18);
+    float patches=noise(p+float2(id*7, id*3))+0.14*noise(p*2.1+id);
     float3 ivory=float3(0.95,0.93,0.82), red=float3(0.88,0.245,0.075), gold=float3(0.92,0.65,0.13), black=float3(0.06,0.075,0.066);
     float3 color=ivory;
-    if(kind==0 || kind==3 || kind==6) color=mix(ivory,red,smoothstep(0.66,0.73,patches));
+    if(kind==0 || kind==3 || kind==6) color=mix(ivory,red,smoothstep(0.51,0.68,patches));
     if(kind==1) color=mix(gold,ivory,smoothstep(0.84,0.95,patches));
-    if(kind==2) color=mix(black,red,smoothstep(0.72,0.79,patches));
-    if(kind==4) color=mix(ivory,black,smoothstep(0.58,0.64,patches));
+    if(kind==2) color=mix(black,red,smoothstep(0.60,0.75,patches));
+    if(kind==4) color=mix(ivory,black,smoothstep(0.45,0.64,patches));
     if(kind==5) color=mix(red,gold,smoothstep(0.88,0.96,patches));
-    if(kind==3 || kind==6) color=mix(color,black,smoothstep(0.83,0.91,noise(p*1.7+id*13)));
-    float shade=0.67+0.32*max(0.0,dot(normalize(in.normal),normalize(float3(-0.25,0.4,1))));
+    if(kind==3 || kind==6) color=mix(color,black,smoothstep(0.76,0.91,noise(p*1.2+id*13)));
+    float3 normal=normalize(in.normal);
+    float curvedBack=pow(max(0.0,normal.z),1.7);
+    float shade=0.37+0.59*curvedBack+0.10*normal.y;
     float scales=sin(in.local.x*260+sin(in.local.y*290)*0.8)*sin(in.local.y*290);
-    color*=shade*(0.97+scales*0.035);
+    color*=shade*(0.99+scales*0.01);
+    color+=float3(0.11,0.13,0.11)*pow(max(0.0,dot(normal,normalize(float3(-0.15,0.30,1)))),9.0);
     float alpha=1;
     if(in.detail.x==1 || in.detail.x==2) {
-        color=mix(color,ivory,0.55)*(0.8+0.12*sin(in.detail.z*17)); alpha=0.52;
+        float rays=pow(0.5+0.5*cos(in.detail.z*72),5.0);
+        color=mix(color,ivory,0.72)*(0.77+rays*0.13);
+        alpha=(0.42+0.12*rays)*(1-0.58*smoothstep(0.65,1.0,in.detail.w));
     }
-    if(in.detail.x==3) { color*=0.75; alpha=0.65; }
+    if(in.detail.x==3) { color*=0.87; alpha=0.38; }
     if(in.detail.x==4) color=float3(0.025,0.03,0.02);
     // Water absorption and reflected environment integrate the entire animal below the surface.
     float3 reflection=env.sample(linearSampler,imageUV(in.point,u.viewport.xy)).rgb;
-    color=mix(color, reflection,0.13+u.placement.w*0.20);
+    float reflectedSky=smoothstep(0.16,0.5,dot(reflection,float3(0.21,0.72,0.07)));
+    color=mix(color, reflection,0.14+u.placement.w*0.18+reflectedSky*0.12);
     color=mix(color,float3(0.075,0.21,0.16),u.placement.w*0.10);
     alpha*=water; return float4(color*alpha,alpha);
 }
@@ -84,19 +93,29 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
         float fade=pow(max(0.0,1-u.style.y/lifetime),1.5)*smoothstep(0.0,0.08,u.style.y);
         float d=r-radius;
         float ring=exp(-d*d/2.0)+0.45*exp(-pow(d+5,2.0)/2.4)+0.18*exp(-pow(d+10,2.0)/3.0);
-        float alpha=ring*fade*u.style.z*water*(u.style.w>0.5 ? 0.75 : 0.32);
+        float alpha=ring*fade*u.style.z*water*(u.style.w>0.5 ? 1.8 : 0.32);
         return float4(float3(0.66,0.77,0.72)*alpha,alpha);
     }
     float2 p=in.local.xy;
-    // Small pointed, lobed autumn leaf with a central vein and asymmetrical edges.
-    float a=atan2(p.y,p.x), r=length(p*float2(1,1.25));
-    float edge=0.47+0.12*cos(a*5)+0.04*sin(a*9+u.style.w);
-    float body=1-smoothstep(edge-0.025,edge+0.025,r);
-    float stem=(1-smoothstep(0.018,0.032,abs(p.y)))*smoothstep(-0.85,-0.75,p.x)*(1-smoothstep(-0.4,-0.3,p.x));
+    // An asymmetric five-lobed maple leaf, with a curled blade and branching veins.
+    p.y += 0.09*sin(p.x*5+u.style.w)*p.x;
+    float a=atan2(p.y,p.x), r=length(p*float2(0.95,1.17));
+    float lobes=cos(a*5+0.16*sin(a*2+u.style.w));
+    float edge=0.43+0.13*lobes+0.065*cos(a)+0.023*sin(a*13+u.style.w*2);
+    edge+=0.018*(noise(p*24+u.style.w)-0.5);
+    float body=1-smoothstep(edge-0.018,edge+0.018,r);
+    float midrib=p.y-0.027*sin(p.x*8);
+    float stem=(1-smoothstep(0.012,0.025,abs(midrib)))*smoothstep(-0.80,-0.70,p.x)*(1-smoothstep(-0.37,-0.29,p.x));
     float alpha=max(body,stem)*u.style.y;
     if(u.style.z==1) alpha*=water;
-    float3 color=mix(float3(0.43,0.19,0.035),float3(0.76,0.52,0.075),0.5+0.4*sin(u.style.w*2.3));
-    color*=0.85+0.15*p.y;
-    color*=1-0.23*exp(-abs(p.y)*90);
+    float mottling=noise(p*11+u.style.w*3);
+    float3 color=mix(float3(0.38,0.15,0.025),float3(0.78,0.56,0.11),0.52+0.22*sin(u.style.w*2.3)+0.22*mottling);
+    float curl=0.70+0.27*cos(midrib*6)+0.17*sin(midrib*9);
+    color*=curl*(0.87+0.17*noise(p*38+u.style.w));
+    float vein=exp(-abs(midrib)*140);
+    float branches=abs(sin((p.x-abs(midrib)*0.85)*32));
+    vein=max(vein,exp(-branches*20)*0.42*(1-smoothstep(0.10,0.40,abs(midrib))));
+    color=mix(color,color*0.65+float3(0.10,0.06,0.005),vein*0.60);
+    color*=0.79+0.21*smoothstep(0.0,0.09,edge-r);
     return float4(color*alpha,alpha);
 }

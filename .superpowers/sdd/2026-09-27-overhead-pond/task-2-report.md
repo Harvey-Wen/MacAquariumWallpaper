@@ -31,3 +31,11 @@ Inspectable genuine rendered output in `.build/render-validation/`:
 - `pond-preview.gif`: 60 actual rainy simulation frames, 800×500, approximately four seconds.
 
 Inspected approved concept and actual sunny, rainy and click PNGs. The scene composition matches the fixed overhead pond, fish remain in water, and rings remain local. Fish are procedural geometry and retain a somewhat cleaner appearance than the photographic environment; no external runtime textures or services are required beyond the bundled environment. Application build/lifecycle, desktop ordering, click monitoring and pause/sleep/lock are Task 3 and are not claimed verified here.
+
+## Focused visual refinement after parent review
+
+The first procedural fish had overly angular membranes and high-frequency markings. Replaced rigid fin fans with smooth Catmull-Rom outlines and subdivided membranes, added subtle radial fin rays and transparency toward fin tips, strengthened curved back/side shading without sharp specular shine, softened color patch boundaries and reduced mottled/scaly contrast. Broadened and faded the local underwater shadow, and added environment brightness-dependent reflection blending. Leaves now have asymmetric lobes, irregular margins, fine color variation, midrib/branch veins and curled blade lighting. Rain ring visibility was increased in the shader only; simulation behavior and panic strengths were untouched.
+
+Regenerated `pond-sunny.png`, `pond-rainy.png`, `pond-click.png` and the full 60-frame GIF. Inspected sunny/rain/click images and five full-resolution checkpoints spanning the preview (`preview-frame-0.png`, `15`, `30`, `45`, `59`): fish change heading without flipping, tail/fin poses vary, leaves remain small and move across the surface, and rain produces local delicate concentric rings. These are rendered checkpoints, not a claim of human real-time playback verification. Parent independently inspected the revised sunny frame and accepted it as suitable for the first dynamic build.
+
+Reran `zsh scripts/test-renderer.sh --preview`: all assertions PASS. Latest 3024×1964 M4 Max sample: median **2.983 ms**, p95 **3.865 ms**, max **6.269 ms** (30 timed frames after 5 warmups). No API, simulation, geometry, or application lifecycle changes in this refinement.
