@@ -33,6 +33,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let effectDepth: MTLDepthStencilState
     private var meshes: [FishSpecies: (MTLBuffer, Int)] = [:]
     private let sampleCount: Int
+    private let environment: MTLTexture
+    private let waterDistance: MTLTexture
+    private(set) var lastGPUSeconds: Double = 0
 
     init(view: MTKView, shaderURL: URL) throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
@@ -41,6 +44,19 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.queue = queue
         let samples = device.supportsTextureSampleCount(4) ? 4 : 1
+        let environmentURL = shaderURL.deletingLastPathComponent().appendingPathComponent("PondEnvironment.png")
+        do {
+            environment = try MTKTextureLoader(device: device).newTexture(URL: environmentURL, options: [.SRGB: false, .origin: MTKTextureLoader.Origin.topLeft.rawValue])
+        } catch { throw OceanRenderError.unavailable("无法加载池塘环境图 \(environmentURL.path)：\(error.localizedDescription)") }
+        let maskDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float, width: 800, height: 500, mipmapped: false)
+        maskDescriptor.usage = .shaderRead
+        guard let mask = device.makeTexture(descriptor: maskDescriptor) else { throw OceanRenderError.unavailable("无法创建共享岸线距离纹理。") }
+        var distances = [Float](repeating: 0, count: 800 * 500)
+        for y in 0..<500 { for x in 0..<800 {
+            distances[y * 800 + x] = PondGeometry.signedDistance(at: SIMD2((Float(x) + 0.5) * 2, 1000 - (Float(y) + 0.5) * 2), size: PondGeometry.imageSize)
+        }}
+        distances.withUnsafeBytes { mask.replace(region: MTLRegionMake2D(0, 0, 800, 500), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 800 * 4) }
+        waterDistance = mask
         sampleCount = samples
         let source = try String(contentsOf: shaderURL, encoding: .utf8)
         let library = try device.makeLibrary(source: source, options: nil)
@@ -90,10 +106,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         view.clearDepth = 1
         view.framebufferOnly = true
         view.wantsLayer = true
-        view.layer?.isOpaque = false
+        view.layer?.isOpaque = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
         if let metalLayer = view.layer as? CAMetalLayer {
-            metalLayer.isOpaque = false
+            metalLayer.isOpaque = true
             metalLayer.backgroundColor = NSColor.clear.cgColor
         }
         view.delegate = self
@@ -107,64 +123,49 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
               let command = queue.makeCommandBuffer() else { return }
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         encode(frame, pass: pass, command: command)
+        command.addCompletedHandler { [weak self] completed in self?.lastGPUSeconds = completed.gpuEndTime - completed.gpuStartTime }
         command.present(drawable)
         command.commit()
     }
 
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-        let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), 0, 0)
-        func phase(_ frequency: Double) -> Float {
-            Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi))
-        }
-        let causticPhases = SIMD2<Float>(phase(0.21), phase(0.17))
-        let ripplePhase = phase(1.4)
+        guard frame.waterStrength > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else { encoder.endEncoding(); return }
+        func phase(_ frequency: Double) -> Float { Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi)) }
+        let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), phase(0.21), phase(0.17))
         encoder.setCullMode(.none)
-        encoder.setRenderPipelineState(effectPipeline)
-        encoder.setDepthStencilState(effectDepth)
-        func effect(at position: SIMD2<Float>, radius: Float, angle: Float = 0,
-                    type: Float, age: Float = 0, strength: Float = 1, seed: Float = 0) {
-            var effectViewport = viewport
-            effectViewport.z = type == 0 ? causticPhases.x : type == 1 ? ripplePhase : 0
-            effectViewport.w = type == 0 ? causticPhases.y : 0
-            var uniforms = EffectUniforms(viewport: effectViewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed))
+        encoder.setFragmentTexture(environment, index: 0)
+        encoder.setFragmentTexture(waterDistance, index: 1)
+        func effect(at position: SIMD2<Float>, radius: Float, angle: Float = 0, type: Float, age: Float = 0, strength: Float = 1, seed: Float = 0) {
+            encoder.setRenderPipelineState(effectPipeline)
+            encoder.setDepthStencilState(effectDepth)
+            var uniforms = EffectUniforms(viewport: viewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed))
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
-        if frame.waterStrength > 0 {
-            // The water is a continuous environment, including when there are no fish.
-            effect(at: frame.size * 0.5, radius: 1, type: 0, strength: min(frame.waterStrength, 1))
-            for i in 0..<8 {
-                let cycle = (frame.time * (0.019 + Double(i) * 0.001) + Double(i) * 0.137).truncatingRemainder(dividingBy: 1)
-                let x = (0.08 + (Double(i) * 0.191).truncatingRemainder(dividingBy: 0.86)) * Double(frame.size.x) + sin(frame.time * 0.4 + Double(i) * 2) * 9
-                let fade = Float(min(cycle * 8, (1 - cycle) * 8, 1))
-                effect(at: SIMD2(Float(x), Float(cycle * Double(frame.size.y))), radius: 2.4 + Float(i % 3), type: 3, strength: fade * frame.waterStrength * 0.65)
-            }
-        }
-        for ripple in frame.ripples.prefix(24) where ripple.age >= 0 && ripple.age < 2.8 {
-            effect(at: ripple.position, radius: 14 + ripple.age * 94, type: 1, age: ripple.age, strength: min(ripple.strength, 1.8))
-        }
-        for (index, current) in frame.currents.prefix(64).enumerated() where current.age >= 0 && current.age < 2.5 {
-            let speed = simd_length(current.velocity)
-            let angle = atan2(current.velocity.y, current.velocity.x)
-            let position = current.position + current.velocity * min(current.age, 0.4) * 0.055
-            effect(at: position, radius: min(75, 23 + speed * 0.035), angle: angle, type: 2, age: current.age, seed: Float(index) * 0.7)
-            if index % 3 == 0 {
-                effect(at: position + SIMD2(4, current.age * 14), radius: 2.3, type: 3, strength: max(0, 1 - current.age / 1.8) * 0.65)
-            }
-        }
-        encoder.setRenderPipelineState(fishPipeline)
-        encoder.setDepthStencilState(fishDepth)
+        effect(at: frame.size * 0.5, radius: 1, type: 0, strength: frame.waterStrength, seed: frame.weatherAmount)
         for fish in frame.fish.sorted(by: { $0.depth > $1.depth }) {
             guard let (buffer, count) = meshes[fish.species] else { continue }
-            var uniforms = FishUniforms(viewport: viewport,
-                                        placement: SIMD4(fish.position.x, fish.position.y, fish.length, min(max(fish.depth, 0), 1)),
-                                        motion: SIMD4(fish.heading, fish.phase, simd_length(fish.velocity), fish.panic),
-                                        kind: SIMD4(Float(fish.species.rawValue), causticPhases.x, causticPhases.y, min(max(frame.waterStrength, 0), 1)))
-            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 1)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: count)
+            for shadow in [true, false] {
+                encoder.setRenderPipelineState(fishPipeline)
+                encoder.setDepthStencilState(shadow ? effectDepth : fishDepth)
+                var uniforms = FishUniforms(viewport: viewport,
+                    placement: SIMD4(fish.position.x, fish.position.y, fish.length, min(max(fish.depth, 0), 1)),
+                    motion: SIMD4(fish.heading, fish.phase, shadow ? 1 : 0, fish.panic),
+                    kind: SIMD4(Float(fish.id), phase(0.21), phase(0.17), frame.waterStrength))
+                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: count)
+            }
+        }
+        effect(at: frame.size * 0.5, radius: 1, type: 1, strength: frame.waterStrength)
+        for ripple in frame.ripples.prefix(24) where ripple.age >= 0 && ripple.age < (ripple.source == .rain ? 1.4 : 2.3) {
+            effect(at: ripple.position, radius: max(8, ripple.age * 95 + 12), type: 2, age: ripple.age, strength: ripple.strength, seed: ripple.source == .rain ? 1 : 0)
+        }
+        for leaf in frame.leaves {
+            effect(at: leaf.position, radius: leaf.length, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
         }
         encoder.endEncoding()
     }
@@ -199,6 +200,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         command.commit()
         command.waitUntilCompleted()
         if let error = command.error { throw error }
+        lastGPUSeconds = command.gpuEndTime - command.gpuStartTime
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         output.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         for index in stride(from: 0, to: bytes.count, by: 4) { bytes.swapAt(index, index + 2) }

@@ -10,5 +10,6 @@ xcrun swiftc -O -swift-version 5 -sdk "$sdk" \
   -o "$app/Contents/MacOS/MacAquariumWallpaper"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp Resources/Ocean.metal "$app/Contents/Resources/Ocean.metal"
+cp Resources/PondEnvironment.png "$app/Contents/Resources/PondEnvironment.png"
 codesign --force --sign - "$app"
 echo "Built: $app"
