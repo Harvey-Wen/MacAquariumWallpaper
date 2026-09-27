@@ -1,0 +1,158 @@
+import AppKit
+
+/// A durable undo journal for the main display's static menu-bar backing image.
+@MainActor final class DesktopBackdrop {
+    struct Record: Codable {
+        var display: String
+        var original: URL
+        var options: Data
+        // Both the old and pending image remain owned across a crash during replacement.
+        var images: [URL]
+        var pending: Bool?
+    }
+
+    let directory: URL
+    private let readImage: (NSScreen) -> URL?
+    private let readOptions: (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]?
+    private let setImage: (URL, NSScreen, [NSWorkspace.DesktopImageOptionKey: Any]) throws -> Void
+    private var records: [Record] = []
+    private var recovered = false
+    private var overridden = Set<String>()
+    private var appliedKey: String?
+    private var journal: URL { directory.appendingPathComponent("ownership.json") }
+
+    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("local.macaquariumwallpaper.app/DesktopBackdrop", isDirectory: true),
+         readImage: @escaping (NSScreen) -> URL? = { NSWorkspace.shared.desktopImageURL(for: $0) },
+         readOptions: @escaping (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]? = { NSWorkspace.shared.desktopImageOptions(for: $0) },
+         setImage: @escaping (URL, NSScreen, [NSWorkspace.DesktopImageOptionKey: Any]) throws -> Void = {
+             try NSWorkspace.shared.setDesktopImageURL($0, for: $1, options: $2)
+         }) throws {
+        self.directory = directory.resolvingSymlinksInPath()
+        self.readImage = readImage; self.readOptions = readOptions; self.setImage = setImage
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: journal.path) {
+            records = try JSONDecoder().decode([Record].self, from: Data(contentsOf: journal))
+        }
+    }
+
+    static func displayIdentifier(_ screen: NSScreen) -> String {
+        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value
+        let uuid = CGDisplayCreateUUIDFromDisplayID(number)!.takeRetainedValue()
+        return CFUUIDCreateString(nil, uuid) as String
+    }
+
+    private func save(_ updated: [Record]) throws {
+        try JSONEncoder().encode(updated).write(to: journal, options: .atomic)
+        records = updated
+    }
+
+    private func clean() throws {
+        let retained = Set(records.flatMap(\.images).map { $0.resolvingSymlinksInPath().path })
+        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where url.lastPathComponent.hasPrefix("pond-") && url.pathExtension == "png" && !retained.contains(url.resolvingSymlinksInPath().path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func restore(_ record: Record, on screen: NSScreen) throws {
+        guard let current = readImage(screen) else { throw failure("无法读取当前桌面背景，保留恢复记录") }
+        // A timed-out request may still be queued in the system. Reassert the
+        // original even if readback has not yet advanced to the pending image.
+        if record.images.contains(current) || (record.pending == true && current == record.original) {
+            let classes: [AnyClass] = [NSDictionary.self, NSString.self, NSNumber.self, NSColor.self, NSArray.self, NSData.self, NSURL.self]
+            guard let raw = try NSKeyedUnarchiver.unarchivedObject(ofClasses: classes, from: record.options) as? [String: Any] else {
+                throw failure("无法读取原桌面选项，保留恢复记录")
+            }
+            let options = Dictionary(uniqueKeysWithValues: raw.map { (NSWorkspace.DesktopImageOptionKey(rawValue: $0.key), $0.value) })
+            try setImage(record.original, screen, options)
+            guard waitForImage(record.original, screen: screen) else { throw failure("系统未确认恢复原桌面背景") }
+        }
+        try save(records.filter { $0.display != record.display })
+        try clean()
+    }
+
+    /// Missing displays retain their journal entries until they become available again.
+    func restoreAll(screens: [NSScreen] = NSScreen.screens) throws {
+        appliedKey = nil
+        overridden.removeAll()
+        for record in records {
+            if let screen = screens.first(where: { Self.displayIdentifier($0) == record.display }) {
+                try restore(record, on: screen)
+            }
+        }
+        try clean()
+    }
+
+    func apply(screen: NSScreen, key: String, render: (URL) throws -> Void) throws {
+        if !recovered {
+            try restoreAll()
+            recovered = true
+        }
+        let identifier = Self.displayIdentifier(screen)
+        // Moving the primary display restores any formerly affected display first.
+        for record in records where record.display != identifier {
+            if let previous = NSScreen.screens.first(where: { Self.displayIdentifier($0) == record.display }) {
+                try restore(record, on: previous)
+            }
+        }
+        guard !overridden.contains(identifier) else { return }
+        guard let current = readImage(screen) else { throw failure("无法备份当前桌面背景") }
+        var record: Record
+        if let existing = records.first(where: { $0.display == identifier }) {
+            guard existing.images.contains(current) else {
+                overridden.insert(identifier)
+                try restore(existing, on: screen) // Releases ownership without changing the user's image.
+                appliedKey = nil
+                return
+            }
+            if appliedKey == key { return }
+            record = existing
+            record.images = [current]
+            try save(records.filter { $0.display != identifier } + [record])
+            try clean()
+        } else {
+            guard current.deletingLastPathComponent() != directory else {
+                throw failure("池塘背景缺少原背景恢复记录，未再次替换")
+            }
+            guard let options = readOptions(screen) else { throw failure("无法备份原桌面选项") }
+            let raw = Dictionary(uniqueKeysWithValues: options.map { ($0.key.rawValue, $0.value) })
+            let data = try NSKeyedArchiver.archivedData(withRootObject: raw, requiringSecureCoding: true)
+            record = Record(display: identifier, original: current, options: data, images: [], pending: false)
+        }
+        let next = directory.appendingPathComponent("pond-\(UUID().uuidString).png")
+        do { try render(next) }
+        catch { try? FileManager.default.removeItem(at: next); throw error }
+        guard readImage(screen) == current else {
+            try FileManager.default.removeItem(at: next)
+            throw failure("生成期间桌面背景已改变，保留你的选择")
+        }
+        record.images.append(next)
+        record.pending = true
+        // Persist before calling the system: a crash on either side can still be undone.
+        do { try save(records.filter { $0.display != identifier } + [record]) }
+        catch { try? FileManager.default.removeItem(at: next); throw error }
+        try setImage(next, screen, [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
+        guard waitForImage(next, screen: screen) else { throw failure("系统未确认池塘桌面背景") }
+        record.images = [next]
+        record.pending = false
+        try save(records.filter { $0.display != identifier } + [record])
+        appliedKey = key
+        try clean()
+    }
+
+    // NSWorkspace returns before its read API catches up (observed on macOS 15).
+    // Keep the journal until acknowledgment; avoid running a nested UI event loop.
+    private func waitForImage(_ url: URL, screen: NSScreen) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        repeat {
+            if readImage(screen) == url { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        return readImage(screen) == url
+    }
+
+    private func failure(_ message: String) -> NSError {
+        NSError(domain: "DesktopBackdrop", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}

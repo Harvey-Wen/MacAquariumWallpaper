@@ -17,18 +17,22 @@ final class TransparentMetalView: MTKView {
     let renderer: OceanRenderer
     let simulation: OceanSimulation
     let input: DesktopInput
-    var enabled = true { didSet { updateActivity() } }
+    var enabled = true { didSet { updateBackdrop(); updateActivity() } }
     var paused = false { didSet { updateActivity() } }
     var interactive = true { didSet { updateActivity() } }
     var weather: PondWeather {
         get { simulation.weather }
         set {
+            let changed = simulation.weather != newValue
             simulation.weather = newValue
+            if changed { updateBackdrop() }
             if enabled && !sleeping && !locked { render() }
             writeDiagnostics()
         }
     }
     var diagnosticURL: URL?
+    private let backdrop: DesktopBackdrop
+    private(set) var backdropError: String?
     private(set) var sleeping = false
     private var locked = false
     private(set) var frameCount = 0
@@ -42,6 +46,7 @@ final class TransparentMetalView: MTKView {
     var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     var animating: Bool { enabled && !paused && !sleeping && !locked && !reducedMotion }
     var status: String {
+        if let backdropError { return "桌面背景错误：\(backdropError)" }
         let scene = "\(simulation.fish.count) 条锦鲤 · \(weather == .rainy ? "雨天" : "晴天")"
         if !enabled { return "池塘已关闭 · \(scene)" }
         if locked { return "屏幕已锁定 · \(scene)" }
@@ -51,7 +56,8 @@ final class TransparentMetalView: MTKView {
         return "\(scene) · 主屏 30 FPS"
     }
 
-    init(shaderURL: URL) throws {
+    init(shaderURL: URL, backdrop: DesktopBackdrop? = nil) throws {
+        self.backdrop = try backdrop ?? DesktopBackdrop()
         guard let screen = NSScreen.screens.first else {
             throw NSError(domain: "Ocean", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到可用显示器"])
         }
@@ -107,7 +113,27 @@ final class TransparentMetalView: MTKView {
         observers.append((center, observer))
     }
 
-    func start() { updateActivity() }
+    func start() { updateBackdrop(); updateActivity() }
+
+    private func updateBackdrop() {
+        do {
+            if enabled, let screen = NSScreen.screens.first {
+                let pixels = screen.convertRectToBacking(screen.frame).size
+                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)"
+                try backdrop.apply(screen: screen, key: key) { url in
+                    var frame = simulation.frame(waterStrength: 0.45)
+                    frame.weatherAmount = weather == .rainy ? 1 : 0
+                    try renderer.writePNG(frame: frame, width: Int(pixels.width), height: Int(pixels.height), to: url)
+                }
+            } else if !enabled {
+                try backdrop.restoreAll()
+            }
+            backdropError = nil
+        } catch {
+            backdropError = error.localizedDescription
+            NSLog("池塘桌面背景：%@", error.localizedDescription)
+        }
+    }
 
     private func updateActivity() {
         timer?.invalidate(); timer = nil
@@ -157,10 +183,14 @@ final class TransparentMetalView: MTKView {
             simulation.resize(to: SIMD2(Float(screen.frame.width), Float(screen.frame.height)))
         }
         input.refresh(screen: screen, force: true)
+        updateBackdrop()
         if enabled && !sleeping && !locked { render() }
     }
 
     func stop() {
+        do { try backdrop.restoreAll(); backdropError = nil }
+        catch { backdropError = error.localizedDescription; NSLog("池塘桌面背景恢复：%@", error.localizedDescription) }
+        writeDiagnostics()
         timer?.invalidate(); timer = nil
         input.stop()
         for (center, observer) in observers { center.removeObserver(observer) }
@@ -172,6 +202,7 @@ final class TransparentMetalView: MTKView {
     func writeDiagnostics() {
         guard let diagnosticURL else { return }
         let dictionary: [String: Any] = [
+            "backdropError": backdropError ?? "",
             "status": status, "frames": frameCount, "meanCPUFrameMS": meanFrameMS,
             "enabled": enabled, "paused": paused, "interactive": interactive,
             "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,
