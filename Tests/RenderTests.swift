@@ -71,15 +71,16 @@ import ImageIO
         precondition(delta(plain,wetPixels)>0.005)
         // Disable water movement and all visible actors to isolate atmospheric rain.
         var streaks = noFish; streaks.waterStrength = 0
-        streaks.leaves = [PondLeaf(id: 1,position: SIMD2(800,500),velocity: .zero,age: 1,rotation: 0,length: 20,stage: .floating,fallDuration: 1,opacity: 0)]
         streaks.time = 604800
         let dryStill = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
         streaks.time += 1.0/30
         let dryLater = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(dryStill.allSatisfy { $0 == 0 }, "Empty dry frame must remain transparent")
         precondition(dryStill == dryLater, "Dry weather must have no atmospheric streak motion")
         streaks.weatherAmount = 1
         streaks.time = 604800
         let frozenRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(frozenRain.contains { $0 != 0 }, "Rain-only frame must render without placeholder actors")
         let pausedRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
         precondition(frozenRain == pausedRain, "Paused frame must freeze rain exactly")
         streaks.time += 1.0/30

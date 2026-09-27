@@ -130,7 +130,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-        guard frame.waterStrength > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else { encoder.endEncoding(); return }
+        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else { encoder.endEncoding(); return }
         func phase(_ frequency: Double) -> Float { Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi)) }
         let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), phase(0.21), phase(0.17))
         encoder.setCullMode(.none)
