@@ -49,6 +49,23 @@ import ImageIO
         for _ in 0..<240 { simulation.update(deltaTime: 1.0/30) }
         let rainy = simulation.frame(waterStrength: 0.45)
         try renderer.writePNG(frame: rainy,width: 1600,height: 1000,to: output.appendingPathComponent("pond-rainy.png"))
+        // Hold weather and every other layer fixed: isolate actual rain impacts.
+        var rainImpacts = rainy
+        rainImpacts.ripples = rainy.ripples.filter { $0.source == .rain }
+        precondition(rainImpacts.ripples.count >= 3)
+        let withRain = try renderer.renderRGBA(frame: rainImpacts,width: 1600,height: 1000)
+        var withoutImpacts = rainImpacts; withoutImpacts.ripples = []
+        let withoutRain = try renderer.renderRGBA(frame: withoutImpacts,width: 1600,height: 1000)
+        var changedWater = 0
+        for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
+            let distance = PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: rainy.size)
+            let i = (y*1600+x)*4
+            let same = (0..<4).allSatisfy { withRain[i+$0] == withoutRain[i+$0] }
+            if distance < -5 { precondition(same, "Rain impacts must leave land unchanged") }
+            if distance > 5 && !same { changedWater += 1 }
+        }}
+        precondition(changedWater > 100, "Rain impacts must visibly change water independently of dimming")
+        print("PASS rain impacts: \(rainImpacts.ripples.count) active, \(changedWater) changed water samples; land unchanged.")
         var wet = noFish; wet.weatherAmount = 1
         let wetPixels = try renderer.renderRGBA(frame: wet,width: 1600,height: 1000)
         precondition(delta(plain,wetPixels)>0.005)
@@ -57,6 +74,15 @@ import ImageIO
         let center = SIMD2<Float>(800,500)
         layers.leaves = [PondLeaf(id: 1,position: center,velocity: .zero,age: 1,rotation: 0,length: 60,stage: .floating,fallDuration: 1,opacity: 1)]
         let leafOnly = try renderer.renderRGBA(frame: layers,width: 1600,height: 1000)
+        var falling = layers
+        falling.leaves[0].stage = .falling
+        falling.leaves[0].age = 0
+        let highLeaf = try renderer.renderRGBA(frame: falling,width: 1600,height: 1000)
+        falling.leaves[0].age = 0.999
+        let landingLeaf = try renderer.renderRGBA(frame: falling,width: 1600,height: 1000)
+        let fullDescent = delta(highLeaf,leafOnly)
+        precondition(fullDescent > 0.000001)
+        precondition(delta(landingLeaf,leafOnly) < fullDescent * 0.01, "Leaf size must converge smoothly before landing")
         layers.fish = [FishState(id: 1,species: .koi,position: center,velocity: .zero,heading: 0,length: 160,depth: 0.5,phase: 0,panic: 0)]
         let leafFish = try renderer.renderRGBA(frame: layers,width: 1600,height: 1000)
         var pose = layers; pose.leaves = []; pose.waterStrength = 0

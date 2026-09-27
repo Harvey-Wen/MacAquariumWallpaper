@@ -165,7 +165,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             effect(at: ripple.position, radius: max(8, ripple.age * 95 + 12), type: 2, age: ripple.age, strength: ripple.strength, seed: ripple.source == .rain ? 1 : 0)
         }
         for leaf in frame.leaves {
-            effect(at: leaf.position, radius: leaf.length, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
+            let progress = min(1, max(0, leaf.age / max(leaf.fallDuration, 0.001)))
+            let eased = progress * progress * (3 - 2 * progress)
+            let scale: Float = leaf.stage == .falling ? 1 + 0.35 * (1 - eased) : 1
+            effect(at: leaf.position, radius: leaf.length * scale, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
         }
         encoder.endEncoding()
     }

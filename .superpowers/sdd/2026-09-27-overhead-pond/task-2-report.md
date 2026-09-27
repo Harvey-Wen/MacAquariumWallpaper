@@ -39,3 +39,11 @@ The first procedural fish had overly angular membranes and high-frequency markin
 Regenerated `pond-sunny.png`, `pond-rainy.png`, `pond-click.png` and the full 60-frame GIF. Inspected sunny/rain/click images and five full-resolution checkpoints spanning the preview (`preview-frame-0.png`, `15`, `30`, `45`, `59`): fish change heading without flipping, tail/fin poses vary, leaves remain small and move across the surface, and rain produces local delicate concentric rings. These are rendered checkpoints, not a claim of human real-time playback verification. Parent independently inspected the revised sunny frame and accepted it as suitable for the first dynamic build.
 
 Reran `zsh scripts/test-renderer.sh --preview`: all assertions PASS. Latest 3024×1964 M4 Max sample: median **2.983 ms**, p95 **3.865 ms**, max **6.269 ms** (30 timed frames after 5 warmups). No API, simulation, geometry, or application lifecycle changes in this refinement.
+
+## Scoped review fixes
+
+Removed the discrete falling/floating size switch in the shader. The renderer now applies a smoothstep descent from 1.35× to 1× using leaf age/fall duration before landing, with zero slope at both ends. A regression render compares the full descent with the last millisecond before landing and requires the landing discontinuity to be below 1% of the full descent difference.
+
+Added a direct rain-impact regression using the genuine rainy simulation frame: keep weather, time, fish and leaves identical, remove only rain ripples, and compare outputs. PASS: **11 active rain impacts**, **12,593 changed water samples**, every checked land sample unchanged. This verifies ring rendering independently of ambient dimming. Adjusted only the rain fade exponent from 1.5 to 0.8 so older delicate rings remain readable; inspected the regenerated 1600×1000 rainy image, where several rings are now visible across left, central and right water. Fish behavior, ripple radius and lifetimes are unchanged.
+
+`zsh scripts/test-renderer.sh --preview` PASS; all images, five preview checkpoints and GIF regenerated. Latest GPU result: median **2.983 ms**, p95 **4.262 ms**, max **4.286 ms** at 3024×1964. Scope: renderer leaf scale, rain fade, and regression tests only.

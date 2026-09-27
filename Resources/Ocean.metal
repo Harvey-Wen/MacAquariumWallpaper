@@ -69,7 +69,7 @@ vertex VertexOut effectVertex(uint id [[vertex_id]], constant EffectUniforms &u 
     const float2 quad[6]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,-1),float2(1,1),float2(-1,1)};
     float2 q=quad[id], p;
     if(u.style.x<1.5) p=(q*0.5+0.5)*u.viewport.xy;
-    else { float c=cos(u.placement.w),s=sin(u.placement.w); float scale=(u.style.x>2.5 && u.style.z<0.5)?1.35:1.0; p=u.placement.xy+float2(c*q.x-s*q.y,s*q.x+c*q.y)*u.placement.z*scale; }
+    else { float c=cos(u.placement.w),s=sin(u.placement.w); p=u.placement.xy+float2(c*q.x-s*q.y,s*q.x+c*q.y)*u.placement.z; }
     VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1);o.point=p;o.local=float3(q,0);o.normal=0;o.detail=0;return o;
 }
 fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
@@ -90,7 +90,7 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
     if(u.style.x<2.5) {
         float r=length(in.point-u.placement.xy), radius=u.style.y*95;
         float lifetime=u.style.w>0.5?1.4:2.3;
-        float fade=pow(max(0.0,1-u.style.y/lifetime),1.5)*smoothstep(0.0,0.08,u.style.y);
+        float fade=pow(max(0.0,1-u.style.y/lifetime),u.style.w>0.5 ? 0.8 : 1.5)*smoothstep(0.0,0.08,u.style.y);
         float d=r-radius;
         float ring=exp(-d*d/2.0)+0.45*exp(-pow(d+5,2.0)/2.4)+0.18*exp(-pow(d+10,2.0)/3.0);
         float alpha=ring*fade*u.style.z*water*(u.style.w>0.5 ? 1.8 : 0.32);
