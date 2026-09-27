@@ -171,7 +171,7 @@ final class OceanSimulation {
             let distance = simd_length(offset)
             if distance < 70 {
                 let influence = 1 - distance / 70
-                fish[index].panic = min(0.28, max(fish[index].panic, influence * 0.16))
+                fish[index].panic = max(fish[index].panic, min(0.28, influence * 0.16))
                 fish[index].velocity += unit(offset, fallback: SIMD2(1, 0)) * influence * 6
             }
         }

@@ -13,12 +13,13 @@ private enum SimulationTests {
         try waterClicksAndFalloff()
         try repeatedClicksRecover()
         try rainIsLocalAndMild()
+        try rainPreservesClickPanicAndFallsOffLocally()
         try leavesLandFloatMoveAndExpire()
         try shorelineContainsWholeFish()
         try resizeAndAspectMapping()
         try frameRateEquivalence()
         try frameSnapshot()
-        print("SimulationTests: 9 passed")
+        print("SimulationTests: 10 passed")
     }
 
     private static func populationAndShoreline() throws {
@@ -76,6 +77,43 @@ private enum SimulationTests {
         try expect(rainy.frame(waterStrength: 0.5).weatherAmount < 0.01, "rain amount fades away")
     }
 
+    private static func rainPreservesClickPanicAndFallsOffLocally() throws {
+        var selected: (seed: UInt64, near: Int, far: Int, point: SIMD2<Float>)?
+        for seed in UInt64(1)...80 {
+            let probe = OceanSimulation(size: SIMD2(1600, 1000), seed: seed)
+            probe.weather = .rainy
+            for _ in 0..<4 { probe.update(deltaTime: 1 / 30) }
+            guard let point = probe.ripples.first(where: { $0.source == .rain })?.position,
+                  let near = probe.fish.firstIndex(where: { simd_distance($0.position, point) < 45 }),
+                  let far = probe.fish.firstIndex(where: { simd_distance($0.position, point) > 180 }) else { continue }
+            selected = (seed, near, far, point)
+            break
+        }
+        guard let selected else { throw TestFailure(description: "expected a seeded rain impact near a koi") }
+
+        let rainy = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
+        let dry = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
+        let overlap = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
+        rainy.weather = .rainy
+        overlap.weather = .rainy
+        for _ in 0..<3 {
+            rainy.update(deltaTime: 1 / 30)
+            dry.update(deltaTime: 1 / 30)
+            overlap.update(deltaTime: 1 / 30)
+        }
+        overlap.click(at: overlap.fish[selected.near].position)
+        try expect(overlap.fish[selected.near].panic > 0.9, "click creates strong panic before rain")
+        rainy.update(deltaTime: 1 / 30)
+        dry.update(deltaTime: 1 / 30)
+        overlap.update(deltaTime: 1 / 30)
+
+        try expect(rainy.fish[selected.near].panic > dry.fish[selected.near].panic, "near koi reacts to rain")
+        try expect(rainy.fish[selected.near].panic < 0.28, "rain response stays mild")
+        try expect(rainy.fish[selected.far].panic == dry.fish[selected.far].panic, "distant koi has no rain panic")
+        try expect(simd_distance(rainy.fish[selected.far].velocity, dry.fish[selected.far].velocity) < 0.0001, "distant koi has no rain impulse")
+        try expect(overlap.fish[selected.near].panic > 0.9, "rain must not reduce stronger click panic")
+    }
+
     private static func leavesLandFloatMoveAndExpire() throws {
         let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
         let calm = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
@@ -94,11 +132,12 @@ private enum SimulationTests {
             sim.update(deltaTime: 1 / 30)
             calm.update(deltaTime: 1 / 30)
         }
-        if let moved = sim.leaves.first(where: { $0.id == floating.id }) {
-            let undisturbed = calm.leaves.first { $0.id == floating.id }!
-            try expect(simd_distance(position, moved.position) > 0.1, "floating leaves move")
-            try expect(simd_distance(undisturbed.position, moved.position) > 0.1, "floating leaves respond to nearby waves")
+        guard let moved = sim.leaves.first(where: { $0.id == floating.id }),
+              let undisturbed = calm.leaves.first(where: { $0.id == floating.id }) else {
+            throw TestFailure(description: "selected floating leaf must survive the wave comparison")
         }
+        try expect(simd_distance(position, moved.position) > 0.1, "floating leaves move")
+        try expect(simd_distance(undisturbed.position, moved.position) > 0.1, "floating leaves respond to nearby waves")
         for _ in 0..<900 { sim.update(deltaTime: 1 / 30) }
         try expect(sim.leaves.allSatisfy { $0.age < 16 && $0.opacity >= 0 && $0.opacity <= 1 }, "old leaves expire and opacity stays valid")
     }
