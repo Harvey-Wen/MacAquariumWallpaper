@@ -39,6 +39,6 @@ struct Ripple {
 
 ## Parent delivery
 
-- [ ] Inspect actual animation frames and visual profiles against the three criticisms, independently review the implementation and fix findings.
-- [ ] Sync to original clean checkout, replace the sole running application after build/signature success, confirm fresh process diagnostics and system backdrop. Never run wallpaper-mutating tests alongside it.
-- [ ] Update verification, commit each verified module, show actual preview and concise delivery. Keep native-managed worktree.
+- [x] Inspect actual animation frames and visual profiles against the three criticisms, independently review the implementation and fix findings. Final review approved; directional leaf-force consistency resolved.
+- [x] Sync to original clean checkout, replace the sole running application after build/signature success, confirm fresh process diagnostics and system backdrop. PID11768: 1802 frames in60.07 simulated seconds,57 disturbances; new owned backdrop and original recovery record verified. No wallpaper-mutating tests alongside it.
+- [x] Update verification, commit each verified module, show actual preview and concise delivery. Keep native-managed worktree.
