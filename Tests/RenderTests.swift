@@ -23,7 +23,7 @@ import ImageIO
         precondition(empty.allSatisfy { $0 == 0 })
         let simulation = OceanSimulation(size: SIMD2(1600,1000),seed: 42)
         for _ in 0..<180 { simulation.update(deltaTime: 1.0/30) }
-        var sunny = simulation.frame(waterStrength: 0.45)
+        let sunny = simulation.frame(waterStrength: 0.45)
         let pixels = try renderer.renderRGBA(frame: sunny,width: 1600,height: 1000)
         precondition(stride(from: 3,to: pixels.count,by: 4).allSatisfy { pixels[$0] == 255 })
         try renderer.writePNG(frame: sunny,width: 1600,height: 1000,to: output.appendingPathComponent("pond-sunny.png"))
@@ -69,6 +69,48 @@ import ImageIO
         var wet = noFish; wet.weatherAmount = 1
         let wetPixels = try renderer.renderRGBA(frame: wet,width: 1600,height: 1000)
         precondition(delta(plain,wetPixels)>0.005)
+        // Disable water movement and all visible actors to isolate atmospheric rain.
+        var streaks = noFish; streaks.waterStrength = 0
+        streaks.leaves = [PondLeaf(id: 1,position: SIMD2(800,500),velocity: .zero,age: 1,rotation: 0,length: 20,stage: .floating,fallDuration: 1,opacity: 0)]
+        streaks.time = 604800
+        let dryStill = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        streaks.time += 1.0/30
+        let dryLater = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(dryStill == dryLater, "Dry weather must have no atmospheric streak motion")
+        streaks.weatherAmount = 1
+        streaks.time = 604800
+        let frozenRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        let pausedRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(frozenRain == pausedRain, "Paused frame must freeze rain exactly")
+        streaks.time += 1.0/30
+        let nextRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        var landStreaks = 0, waterStreaks = 0
+        for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
+            let i=(y*1600+x)*4
+            if (0..<3).contains(where: { frozenRain[i+$0] != nextRain[i+$0] }) {
+                let d=PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: streaks.size)
+                if d < -5 { landStreaks += 1 }
+                if d > 5 { waterStreaks += 1 }
+            }
+        }}
+        precondition(landStreaks > 100 && waterStreaks > 100, "Atmospheric rain must move over both foliage and water")
+        var lastRain = nextRain
+        for step in 2...12 {
+            streaks.time = 604800 + Double(step)/30
+            let next = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+            let d = delta(lastRain,next); precondition(d > 0.00001 && d < 0.005); lastRain = next
+        }
+        streaks.time = 604802 - 0.0001
+        let wrapBefore = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        streaks.time = 604802 + 0.0001
+        let wrapAfter = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(delta(wrapBefore,wrapAfter) < delta(frozenRain,nextRain)*0.1, "Rain period must wrap without a visible reset")
+        streaks.time = 604800
+        let daySeven = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        streaks.time = 0
+        let firstDay = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
+        precondition(daySeven == firstDay, "Rain phase must retain precision at day seven")
+        print("PASS atmospheric rain: \(landStreaks) changed land samples, \(waterStreaks) water samples; dry/paused static, day-seven motion and wrap continuous.")
         // Same leaf over a fish: surface pixels must cover the underwater animal.
         var layers = noFish; layers.waterStrength = 0.45
         let center = SIMD2<Float>(800,500)
@@ -125,15 +167,16 @@ import ImageIO
             precondition(stride(from: 3,to: bytes.count,by: 4).allSatisfy { bytes[$0]==255 })
             try renderer.writePNG(frame: sample,width: Int(size.x),height: Int(size.y),to: output.appendingPathComponent("pond-\(Int(size.x))x\(Int(size.y)).png"))
         }
+        var benchmark = rainy
         var timings: [Double]=[]
         for i in 0..<35 {
-            sunny.time += 1.0/30
-            _ = try renderer.renderRGBA(frame: sunny,width: 3024,height: 1964)
+            benchmark.time += 1.0/30
+            _ = try renderer.renderRGBA(frame: benchmark,width: 3024,height: 1964)
             if i>=5 { timings.append(renderer.lastGPUSeconds*1000) }
         }
         timings.sort()
         print("PASS opacity, empty, mesh, fish difference, \(landChecked) unchanged land samples, weather, surface leaf ordering, seven-day continuity and 3 aspect ratios.")
-        print("GPU \(view.device!.name) 3024x1964: median \(timings[15]) ms; p95 \(timings[28]) ms; max \(timings.last!) ms (30 measured frames).")
+        print("GPU \(view.device!.name) 3024x1964 rainy: median \(timings[15]) ms; p95 \(timings[28]) ms; max \(timings.last!) ms (30 measured frames).")
         precondition(timings[28]<1000/30)
         if CommandLine.arguments.contains("--preview") {
             let url=output.appendingPathComponent("pond-preview.gif")

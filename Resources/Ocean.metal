@@ -68,24 +68,37 @@ fragment float4 fishFragment(VertexOut in [[stage_in]], constant FishUniforms &u
 vertex VertexOut effectVertex(uint id [[vertex_id]], constant EffectUniforms &u [[buffer(0)]]) {
     const float2 quad[6]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,-1),float2(1,1),float2(-1,1)};
     float2 q=quad[id], p;
-    if(u.style.x<1.5) p=(q*0.5+0.5)*u.viewport.xy;
+    if(u.style.x<1.5 || u.style.x>3.5) p=(q*0.5+0.5)*u.viewport.xy;
     else { float c=cos(u.placement.w),s=sin(u.placement.w); p=u.placement.xy+float2(c*q.x-s*q.y,s*q.x+c*q.y)*u.placement.z; }
     VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1);o.point=p;o.local=float3(q,0);o.normal=0;o.detail=0;return o;
 }
 fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
+    if(u.style.x>3.5) {
+        // Sheared screen-space rain: eight rows repeat seamlessly every two seconds.
+        float2 grid=float2(in.point.x+in.point.y*0.28,in.point.y+u.style.y*560)/float2(34,140);
+        float2 cell=floor(grid), local=fract(grid);
+        float seed=hash(float2(cell.x,fmod(cell.y,8.0)));
+        float center=0.18+seed*0.64;
+        float width=(0.45+seed*0.30)/34;
+        float line=1-smoothstep(width,width+fwidth(grid.x),abs(local.x-center));
+        float along=(local.y-(0.22+hash(float2(cell.x+67,fmod(cell.y,8.0)))*0.56))*140;
+        float streak=line*(1-smoothstep(5.0+seed*8,12.0+seed*10,abs(along)));
+        float alpha=streak*u.style.z*(0.10+seed*0.10);
+        return float4(float3(0.70,0.84,0.78)*alpha,alpha);
+    }
     float2 uv=imageUV(in.point,u.viewport.xy); float water=maskAt(in.point,u.viewport.xy,mask);
     float phase=u.viewport.z, phase2=u.viewport.w;
     float2 wave=float2(sin(uv.y*67+sin(uv.x*35+phase2)*1.4+phase),cos(uv.x*59+sin(uv.y*29+phase)*1.3+phase2));
     if(u.style.x<0.5) {
         float2 offset=wave*0.00065*water*u.style.z;
         float3 color=env.sample(linearSampler,uv+offset).rgb;
-        color*=1-u.style.w*0.10;
+        color*=1-u.style.w*0.04;
         return float4(color,1);
     }
     if(u.style.x<1.5) {
         float glint=pow(max(0.0,wave.x*wave.y),8.0);
         float alpha=water*u.style.z*(0.009+glint*0.055);
-        return float4(float3(0.57,0.68,0.66)*alpha,alpha);
+        return float4(float3(0.60,0.76,0.67)*alpha,alpha);
     }
     if(u.style.x<2.5) {
         float r=length(in.point-u.placement.xy), radius=u.style.y*95;
@@ -109,13 +122,13 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
     float alpha=max(body,stem)*u.style.y;
     if(u.style.z==1) alpha*=water;
     float mottling=noise(p*11+u.style.w*3);
-    float3 color=mix(float3(0.38,0.15,0.025),float3(0.78,0.56,0.11),0.52+0.22*sin(u.style.w*2.3)+0.22*mottling);
+    float3 color=mix(float3(0.14,0.36,0.055),float3(0.59,0.72,0.17),0.52+0.22*sin(u.style.w*2.3)+0.22*mottling);
     float curl=0.70+0.27*cos(midrib*6)+0.17*sin(midrib*9);
     color*=curl*(0.87+0.17*noise(p*38+u.style.w));
     float vein=exp(-abs(midrib)*140);
     float branches=abs(sin((p.x-abs(midrib)*0.85)*32));
     vein=max(vein,exp(-branches*20)*0.42*(1-smoothstep(0.10,0.40,abs(midrib))));
-    color=mix(color,color*0.65+float3(0.10,0.06,0.005),vein*0.60);
+    color=mix(color,color*0.65+float3(0.07,0.10,0.015),vein*0.60);
     color*=0.79+0.21*smoothstep(0.0,0.09,edge-r);
     return float4(color*alpha,alpha);
 }

@@ -170,6 +170,11 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             let scale: Float = leaf.stage == .falling ? 1 + 0.35 * (1 - eased) : 1
             effect(at: leaf.position, radius: leaf.length * scale, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
         }
+        if frame.weatherAmount > 0 {
+            // Reduce Double time before Float conversion; frozen frames also freeze rain.
+            effect(at: frame.size * 0.5, radius: 1, type: 4,
+                   age: Float(frame.time.truncatingRemainder(dividingBy: 2)), strength: frame.weatherAmount)
+        }
         encoder.endEncoding()
     }
 
