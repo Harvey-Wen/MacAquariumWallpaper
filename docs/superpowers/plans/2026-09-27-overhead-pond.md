@@ -4,13 +4,13 @@
 
 **Goal:** Deliver the approved overhead pond as an interactive macOS desktop wallpaper, including the user-requested verdant rainy park revision and matching menu-bar backdrop.
 
-**Architecture:** A fish-free environment texture derived from the approved concept provides the natural bank and pond bed. A single shared shoreline geometry governs simulation, mouse hits and a renderer water mask. Native Metal draws independent koi, animated water/refraction, rainfall ripples and leaves; existing AppKit desktop window and input filtering remain.
+**Architecture:** A fish-free environment texture supplies full-frame open water and overhanging foliage per the latest composition revision. Shared visible-water geometry governs simulation, mouse hits and the renderer mask. Native Metal draws independent koi, animated water/refraction, rainfall ripples and leaves; existing AppKit desktop window and input filtering remain.
 
 **Tech Stack:** Swift 5, AppKit, Metal, macOS 14+, local resources; existing SDK selection in scripts.
 
 ## Global Constraints
 
-- Detailed natural scenery with the latest verdant rainy park palette, fixed overhead camera, irregular pond, around 30 koi.
+- Detailed natural scenery with the latest verdant rainy park palette, fixed overhead camera, full-frame open pond with peripheral tree branches, around 30 koi.
 - Click water creates ripples, briefly scatters nearby fish, then fish recover.
 - Rain lightly affects nearby fish; falling leaves land, ripple, float, attract a few nearby fish and respond to waves.
 - Main display, full desktop background below icons and applications, no focus/input interception, no network at runtime, no audio.
@@ -136,3 +136,13 @@ check(controller.simulation.time == pausedTime, "pause freezes weather, leaves a
 - [ ] Harmonize water glints and leaves with the green early-summer palette; leaves should be predominantly fresh green with restrained yellow-green variation. Avoid darkening the scene into muddy black. Keep fish readable and modestly sized, no new UI or features.
 - [ ] Extend existing meaningful renderer checks for rain-only motion, no dry streaks, and long-running continuity. Preserve ring-on-land exclusion and layer checks. Export sunny/rainy stills and real rendered GIF, visually inspect and measure rainy GPU performance at 3024×1964.
 - [ ] Commit code/tests as a verified module and record exact evidence. Parent handles generated asset and provenance documentation, final build/live verification and default weather demonstration.
+
+### Task 6: Open the pond across the full screen (latest user revision)
+
+**Files:** Parent supplies replacement `Resources/PondEnvironment.png`. Agent owns `Sources/PondGeometry.swift`, `Sources/OceanSimulation.swift`, `Tests/SimulationTests.swift`, necessary `Tests/RenderTests.swift` sample-position updates, and `docs/verification.md` evidence.
+
+- [ ] Inspect the new image. Remove the original irregular enclosed-bank polygon. Shared visible-water mask must match the open water and conservatively exclude only overhanging edge foliage. Water extends through broad areas of all four screen edges; no physical bank is depicted. Keep exact centered aspect-fill mapping.
+- [ ] Expand fish initialization and rain sampling beyond the old small central pond. Keep 30 koi, body clearance, bounded effects and deterministic timing. Update leaf launch points to several actual overhanging branches, with falling velocity directed toward adjoining water. Leaves should be visibly attached to a plausible branch origin and enter nearby water; no old north-bank-only assumptions.
+- [ ] Adapt genuinely obsolete bank-specific tests to the new composition. Test open water where the old bottom peninsula was, conservative foliage rejection, source/screen mapping, fish containment under disturbances, local interactions, leaf landing/ripples and bounded steady state. Avoid assertions that pass only through empty loops; exercise both foliage and water samples for render exclusion. Keep day-seven/rain/pause/layer regressions.
+- [ ] Run simulation and renderer `--preview` after asset integration, inspect final sunny/rainy/GIF checkpoints at primary display aspect; verify no fish/rings drawn on foliage and no visible old bank outline. Record actual GPU benchmark and output paths.
+- [ ] Commit the verified module and write report. Do not change desktop helper/input/app, add features, or rework unrelated simulation algorithms. Parent handles final build, native integration check, original-checkout sync and launch.

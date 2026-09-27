@@ -16,3 +16,9 @@
 最终编辑提示：Edit the supplied overhead pond environment image into the verdant rainy Japanese park atmosphere of The Garden of Words: luminous jade and emerald greens, lush rain-soaked trees, cool diffuse cloud light, detailed painterly animation-background realism. Transform muted olive/yellow-brown foliage into emerald, malachite, forest green and restrained chartreuse highlights; damp cool gray rocks and luxuriant green moss; clear jade water with teal shadows and silver-green reflections. Preserve exact overhead camera, aspect ratio, shoreline, rocks, canopies and water/land boundary. No fish, floating leaves, rain streaks, droplets, ripple circles, text, UI, borders or watermark. Full bleed through the top edge for the menu-bar backdrop.
 
 动态参考：[用户提供的抖音视频](https://www.douyin.com/video/7690052489864891674)，已在浏览器观察其细斜雨丝、浅色池底和轻柔鱼群；仅参考动态节奏，未提取或使用视频素材。
+
+## 2026-09-27 整屏池水修订（当前构图）
+
+用户进一步取消不规则围岸，要求像视频一样铺满池水，四周只留大树伸出的枝叶。`pond-full-frame.png` 是内置imagegen按此要求编辑的完整环境图，将替换运行资源；最初的 `pond-approved.png` 留作历史参考。水面延伸到画外，没有石岸轮廓、半岛、地面或树干，四角有少量悬在水上的枝叶。
+
+最终构图提示：Recompose the green pond as continuous open water extending beyond all four screen edges, 85–90% open water, strict vertical aerial camera, near16:10. Remove the enclosing shoreline, all bank rocks, bottom rocky peninsula and ground; do not replace with a circular or rectangular visible pool outline. Offscreen mature trees extend asymmetrical leafy branches at corners/perimeter only, no trunks or continuous foliage border. Keep the emerald/jade Garden of Words rainy-park palette and detailed painterly naturalism. Spacious clear green water, softly painted submerged slate-green stones, connected quiet tonal areas, subdued canopy and sky reflections. No fish, floating leaves, rain streaks, droplets, circular ripples, text, UI, watermark, people or structures; those moving elements are supplied by the live renderer.
