@@ -44,7 +44,21 @@ import ImageIO
                 precondition(Array(plain[i..<i+4]) == Array(ripplePixels[i..<i+4])); landChecked += 1
             }
         }}
+        precondition(landChecked > 1000, "Foliage exclusion must exercise real samples")
         precondition(delta(plain,ripplePixels)>0)
+        var foliageFish = noFish
+        foliageFish.fish = [FishState(id: 1,species: .koi,position: SIMD2(100,900),velocity: .zero,heading: 0,length: 160,depth: 0.5,phase: 0,panic: 0),
+                            FishState(id: 2,species: .koi,position: SIMD2(800,140),velocity: .zero,heading: 0,length: 160,depth: 0.5,phase: 0,panic: 0)]
+        let fishMaskPixels = try renderer.renderRGBA(frame: foliageFish,width: 1600,height: 1000)
+        var changedFishWater = 0
+        for y in stride(from: 0,to: 1000,by: 3) { for x in stride(from: 0,to: 1600,by: 3) {
+            let distance = PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: noFish.size)
+            let i=(y*1600+x)*4
+            let same = (0..<4).allSatisfy { plain[i+$0] == fishMaskPixels[i+$0] }
+            if distance < -5 { precondition(same, "Fish cannot paint over opaque foliage") }
+            if distance > 5 && !same { changedFishWater += 1 }
+        }}
+        precondition(changedFishWater > 100, "Fish must render in former bottom peninsula water")
         simulation.weather = .rainy
         for _ in 0..<240 { simulation.update(deltaTime: 1.0/30) }
         let rainy = simulation.frame(waterStrength: 0.45)
@@ -56,14 +70,15 @@ import ImageIO
         let withRain = try renderer.renderRGBA(frame: rainImpacts,width: 1600,height: 1000)
         var withoutImpacts = rainImpacts; withoutImpacts.ripples = []
         let withoutRain = try renderer.renderRGBA(frame: withoutImpacts,width: 1600,height: 1000)
-        var changedWater = 0
+        var changedWater = 0, foliageChecked = 0
         for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
             let distance = PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: rainy.size)
             let i = (y*1600+x)*4
             let same = (0..<4).allSatisfy { withRain[i+$0] == withoutRain[i+$0] }
-            if distance < -5 { precondition(same, "Rain impacts must leave land unchanged") }
+            if distance < -5 { precondition(same, "Rain impacts must leave foliage unchanged"); foliageChecked += 1 }
             if distance > 5 && !same { changedWater += 1 }
         }}
+        precondition(foliageChecked > 1000)
         precondition(changedWater > 100, "Rain impacts must visibly change water independently of dimming")
         print("PASS rain impacts: \(rainImpacts.ripples.count) active, \(changedWater) changed water samples; land unchanged.")
         var wet = noFish; wet.weatherAmount = 1
@@ -168,7 +183,13 @@ import ImageIO
             precondition(stride(from: 3,to: bytes.count,by: 4).allSatisfy { bytes[$0]==255 })
             try renderer.writePNG(frame: sample,width: Int(size.x),height: Int(size.y),to: output.appendingPathComponent("pond-\(Int(size.x))x\(Int(size.y)).png"))
         }
-        var benchmark = rainy
+        let primary = OceanSimulation(size: SIMD2(3024,1964),seed: 42)
+        for _ in 0..<180 { primary.update(deltaTime: 1.0/30) }
+        try renderer.writePNG(frame: primary.frame(waterStrength: 0.45),width: 3024,height: 1964,to: output.appendingPathComponent("pond-primary-sunny.png"))
+        primary.weather = .rainy
+        for _ in 0..<240 { primary.update(deltaTime: 1.0/30) }
+        var benchmark = primary.frame(waterStrength: 0.45)
+        try renderer.writePNG(frame: benchmark,width: 3024,height: 1964,to: output.appendingPathComponent("pond-primary-rainy.png"))
         var timings: [Double]=[]
         for i in 0..<35 {
             benchmark.time += 1.0/30
@@ -184,13 +205,13 @@ import ImageIO
             let destination=CGImageDestinationCreateWithURL(url as CFURL,"com.compuserve.gif" as CFString,60,nil)!
             CGImageDestinationSetProperties(destination,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFLoopCount:0]] as CFDictionary)
             for index in 0..<60 {
-                simulation.update(deltaTime: 1.0/15)
+                primary.update(deltaTime: 1.0/15)
                 if index % 15 == 0 || index == 59 {
-                    try renderer.writePNG(frame: simulation.frame(waterStrength: 0.45),width: 1600,height: 1000,to: output.appendingPathComponent("preview-frame-\(index).png"))
+                    try renderer.writePNG(frame: primary.frame(waterStrength: 0.45),width: 1512,height: 982,to: output.appendingPathComponent("preview-frame-\(index).png"))
                 }
-                let bytes=try renderer.renderRGBA(frame: simulation.frame(waterStrength: 0.45),width: 800,height: 500)
+                let bytes=try renderer.renderRGBA(frame: primary.frame(waterStrength: 0.45),width: 756,height: 491)
                 let data=Data(bytes) as CFData
-                let image=CGImage(width:800,height:500,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:3200,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:data)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!
+                let image=CGImage(width:756,height:491,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:3024,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:data)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!
                 CGImageDestinationAddImage(destination,image,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFDelayTime:0.067]] as CFDictionary)
             }
             precondition(CGImageDestinationFinalize(destination))

@@ -184,18 +184,21 @@ final class OceanSimulation {
     }
 
     private func spawnLeaf() {
-        // Tree canopy hangs over the north bank at these source-image positions.
-        let anchors: [SIMD2<Float>] = [SIMD2(390, 195), SIMD2(550, 200), SIMD2(755, 190)]
-        let anchor = anchors[nextLeafID % anchors.count]
-        let imagePoint = anchor + SIMD2(generator.float(in: -25...25), generator.float(in: -10...20))
-        let uv = imagePoint / PondGeometry.imageSize
-        let point = PondGeometry.point(for: uv, size: size)
-        guard PondGeometry.contains(point, size: size, margin: 12) else { return }
-        let scale = max(size.x / 1600, size.y / 1000)
-        leaves.append(PondLeaf(id: nextLeafID, position: point, velocity: SIMD2(generator.float(in: -5...5), -generator.float(in: 5...10)) * scale,
-                               age: 0, rotation: generator.float(in: 0...(2 * .pi)), length: generator.float(in: 12...19) * scale,
-                               stage: .falling, fallDuration: generator.float(in: 0.7...1.15), opacity: 1))
+        // Branch tips in the four opaque corner canopies, toward adjacent water.
+        let anchors: [SIMD2<Float>] = [SIMD2(480, 75), SIMD2(270, 890), SIMD2(1500, 120), SIMD2(1400, 920)]
+        let landings: [SIMD2<Float>] = [SIMD2(575, 155), SIMD2(370, 810), SIMD2(1400, 210), SIMD2(1290, 835)]
+        let index = nextLeafID % anchors.count
         nextLeafID += 1
+        let point = PondGeometry.point(for: anchors[index] / PondGeometry.imageSize, size: size)
+        let landing = PondGeometry.point(for: landings[index] / PondGeometry.imageSize, size: size)
+        let scale = max(size.x / 1600, size.y / 1000)
+        let duration = generator.float(in: 0.7...1.15)
+        // Cropped-off branches skip their turn, without retry loops or stalled IDs.
+        guard point.x >= 0, point.x <= size.x, point.y >= 0, point.y <= size.y,
+              PondGeometry.contains(landing, size: size, margin: 20 * scale) else { return }
+        leaves.append(PondLeaf(id: nextLeafID - 1, position: point, velocity: (landing - point) / duration,
+                               age: 0, rotation: generator.float(in: 0...(2 * .pi)), length: generator.float(in: 12...19) * scale,
+                               stage: .falling, fallDuration: duration, opacity: 1))
         if leaves.count > 12 { leaves.removeFirst(leaves.count - 12) }
     }
 
@@ -205,7 +208,7 @@ final class OceanSimulation {
             leaf.age += step
             if leaf.stage == .falling {
                 leaf.rotation = (leaf.rotation + step * 0.33).truncatingRemainder(dividingBy: 2 * .pi)
-                leaf.position += leaf.velocity * step
+                leaf.position += leaf.velocity * min(step, max(0, leaf.fallDuration - (leaf.age - step)))
                 if leaf.age >= leaf.fallDuration {
                     leaf.stage = .floating
                     leaf.velocity *= 0.25
@@ -244,8 +247,7 @@ final class OceanSimulation {
 
     private func randomWaterPoint(margin: Float) -> SIMD2<Float>? {
         for _ in 0..<24 {
-            let uv = SIMD2(generator.float(in: 0.12...0.92), generator.float(in: 0.16...0.76))
-            let point = PondGeometry.point(for: uv, size: size)
+            let point = SIMD2(generator.float(in: 0...size.x), generator.float(in: 0...size.y))
             if PondGeometry.contains(point, size: size, margin: margin) { return point }
         }
         return nil
@@ -259,8 +261,7 @@ final class OceanSimulation {
             let length = generator.float(in: 48...76) * scale
             var position = PondGeometry.point(for: SIMD2(0.5, 0.5), size: size)
             for _ in 0..<100 {
-                let uv = SIMD2(generator.float(in: 0.19...0.87), generator.float(in: 0.23...0.72))
-                let candidate = PondGeometry.point(for: uv, size: size)
+                let candidate = SIMD2(generator.float(in: 0...size.x), generator.float(in: 0...size.y))
                 if PondGeometry.contains(candidate, size: size, margin: length * 0.5 + 20) {
                     position = candidate
                     break

@@ -24,6 +24,7 @@ import AppKit
                 controller.diagnosticURL = URL(fileURLWithPath: args[index + 1])
             }
             desktop = controller
+            controller.weather = .rainy
             controller.start()
         } catch {
             launchError = "无法启动：\(error.localizedDescription)"

@@ -3,18 +3,19 @@ import simd
 struct PondGeometry {
     static let imageSize = SIMD2<Float>(1600, 1000)
 
-    // Source-image coordinates, clockwise from the upper-left bank. The line is
-    // deliberately inside the visible water so effects never spill onto land.
+    // Top-left source coordinates: only opaque corner foliage is excluded.
+    // Dark canopy reflections remain water; broad stretches of every edge are open.
     private static let shore: [SIMD2<Float>] = [
-        SIMD2(215, 205), SIMD2(245, 145), SIMD2(330, 112), SIMD2(455, 126),
-        SIMD2(570, 139), SIMD2(665, 119), SIMD2(800, 124), SIMD2(915, 147),
-        SIMD2(1030, 185), SIMD2(1130, 222), SIMD2(1220, 202), SIMD2(1310, 215),
-        SIMD2(1370, 277), SIMD2(1400, 390), SIMD2(1460, 495), SIMD2(1470, 610),
-        SIMD2(1415, 690), SIMD2(1335, 740), SIMD2(1245, 775), SIMD2(1170, 812),
-        SIMD2(1080, 823), SIMD2(974, 802), SIMD2(865, 768), SIMD2(763, 739),
-        SIMD2(665, 738), SIMD2(595, 779), SIMD2(495, 778), SIMD2(408, 729),
-        SIMD2(325, 672), SIMD2(251, 625), SIMD2(185, 562), SIMD2(143, 474),
-        SIMD2(145, 365), SIMD2(172, 278)
+        SIMD2(550, 0), SIMD2(1300, 0), SIMD2(1300, 65),
+        SIMD2(1410, 105), SIMD2(1470, 150), SIMD2(1530, 180), SIMD2(1600, 190),
+        SIMD2(1600, 655), SIMD2(1550, 675), SIMD2(1520, 780), SIMD2(1430, 785),
+        SIMD2(1360, 845), SIMD2(1340, 905), SIMD2(1240, 920), SIMD2(1240, 1000),
+        SIMD2(220, 1000), SIMD2(220, 955), SIMD2(320, 905), SIMD2(310, 860),
+        SIMD2(225, 850), SIMD2(215, 800), SIMD2(175, 760), SIMD2(200, 670),
+        SIMD2(120, 650), SIMD2(60, 695), SIMD2(0, 685),
+        SIMD2(0, 335), SIMD2(70, 325), SIMD2(85, 225), SIMD2(120, 190),
+        SIMD2(250, 200), SIMD2(320, 175), SIMD2(300, 110), SIMD2(270, 70),
+        SIMD2(350, 40), SIMD2(385, 95), SIMD2(440, 75), SIMD2(500, 110), SIMD2(550, 65)
     ]
 
     private static func transform(_ size: SIMD2<Float>) -> (scale: Float, offset: SIMD2<Float>) {
@@ -50,7 +51,8 @@ struct PondGeometry {
                 inside.toggle()
             }
         }
-        return (inside ? closest : -closest) * scale
+        let viewportRoom = min(point.x, point.y, size.x - point.x, size.y - point.y)
+        return min((inside ? closest : -closest) * scale, viewportRoom)
     }
 
     static func inwardNormal(at point: SIMD2<Float>, size: SIMD2<Float>) -> SIMD2<Float> {

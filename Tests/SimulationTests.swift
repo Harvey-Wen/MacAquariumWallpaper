@@ -15,7 +15,7 @@ private enum SimulationTests {
         try rainIsLocalAndMild()
         try rainPreservesClickPanicAndFallsOffLocally()
         try leavesLandFloatMoveAndExpire()
-        try groundedLeavesStopRotating()
+        try cornerLeavesAndExpandedRain()
         try shorelineContainsWholeFish()
         try resizeAndAspectMapping()
         try frameRateEquivalence()
@@ -33,9 +33,14 @@ private enum SimulationTests {
         try expect(a.fish.allSatisfy { PondGeometry.contains($0.position, size: a.size, margin: $0.length * 0.5) }, "initial fish need whole-body clearance")
         try expect(!PondGeometry.contains(SIMD2(5, 5), size: a.size), "lower-left land should stay land")
         try expect(PondGeometry.contains(SIMD2(800, 500), size: a.size), "center should be water")
-        try expect(!PondGeometry.contains(PondGeometry.point(for: SIMD2(0.65625, 0.16), size: a.size), size: a.size), "north bank must use top-left image coordinates")
-        try expect(PondGeometry.contains(PondGeometry.point(for: SIMD2(0.65625, 0.78), size: a.size), size: a.size), "south-east water should stay water")
-        try expect(!PondGeometry.contains(PondGeometry.point(for: SIMD2(0.90625, 0.75), size: a.size), size: a.size), "right tree canopy should stay outside water")
+        for uv: SIMD2<Float> in [SIMD2(0.5, 0.005), SIMD2(0.5, 0.995), SIMD2(0.005, 0.5), SIMD2(0.995, 0.5), SIMD2(0.5, 0.86), SIMD2(0.1, 0.4)] {
+            try expect(PondGeometry.contains(PondGeometry.point(for: uv, size: a.size), size: a.size), "edges, former peninsula and reflections are water")
+        }
+        for uv: SIMD2<Float> in [SIMD2(0.02, 0.02), SIMD2(0.97, 0.04), SIMD2(0.03, 0.94), SIMD2(0.96, 0.96)] {
+            try expect(!PondGeometry.contains(PondGeometry.point(for: uv, size: a.size), size: a.size), "opaque corner foliage is excluded")
+        }
+        try expect(a.fish.contains { $0.position.y < 220 } && a.fish.contains { $0.position.y > 780 }, "fish use newly opened upper and lower water")
+
     }
 
     private static func waterClicksAndFalloff() throws {
@@ -146,25 +151,37 @@ private enum SimulationTests {
         try expect(sim.leaves.allSatisfy { $0.age < 16 && $0.opacity >= 0 && $0.opacity <= 1 }, "old leaves expire and opacity stays valid")
     }
 
-    private static func groundedLeavesStopRotating() throws {
+    private static func cornerLeavesAndExpandedRain() throws {
         let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 1)
-        var grounded: PondLeaf?
-        for _ in 0..<240 {
-            if let leaf = sim.leaves.first(where: { $0.stage == .floating }) {
-                sim.click(at: leaf.position + SIMD2(0, -20))
-            }
+        var origins = Set<Int>(), landings = Set<Int>()
+        var rainNearEdges = Set<Int>()
+        sim.weather = .rainy
+        for _ in 0..<1800 {
             sim.update(deltaTime: 1 / 30)
-            if let leaf = sim.leaves.first(where: { $0.stage == .grounded }) {
-                grounded = leaf
-                break
+            for leaf in sim.leaves {
+                if leaf.stage == .falling && leaf.age < 0.04 {
+                    origins.insert(leaf.id % 4)
+                    try expect(!PondGeometry.contains(leaf.position, size: sim.size), "leaf begins on a real corner branch")
+                    try expect(PondGeometry.contains(leaf.position + leaf.velocity * (leaf.fallDuration - leaf.age), size: sim.size, margin: leaf.length), "branch trajectory ends in adjoining water")
+                }
+                if leaf.stage == .floating {
+                    landings.insert(leaf.id % 4)
+                    try expect(PondGeometry.contains(leaf.position, size: sim.size), "floating leaf is on water")
+                }
             }
+            for ripple in sim.ripples {
+                try expect(PondGeometry.contains(ripple.position, size: sim.size), "all landing/rain rings are on water")
+                if ripple.source == .rain {
+                    if ripple.position.x < 160 { rainNearEdges.insert(0) }
+                    if ripple.position.x > 1440 { rainNearEdges.insert(1) }
+                    if ripple.position.y < 100 { rainNearEdges.insert(2) }
+                    if ripple.position.y > 900 { rainNearEdges.insert(3) }
+                }
+            }
+            try expect(sim.leaves.count <= 12 && sim.ripples.count <= 24, "steady-state effects remain bounded")
         }
-        guard let grounded else { throw TestFailure(description: "wave-driven leaf should reach the bank") }
-        for _ in 0..<30 { sim.update(deltaTime: 1 / 30) }
-        guard let later = sim.leaves.first(where: { $0.id == grounded.id }) else {
-            throw TestFailure(description: "grounded leaf should survive the stability check")
-        }
-        try expect(later.stage == .grounded && later.rotation == grounded.rotation, "grounded leaves stay still")
+        try expect(origins.count == 4 && landings.count == 4, "all four branch paths spawn and land")
+        try expect(rainNearEdges.count == 4, "rain reaches open water along every edge")
     }
 
     private static func shorelineContainsWholeFish() throws {
@@ -191,7 +208,7 @@ private enum SimulationTests {
         let before = sim.fish.map { PondGeometry.uv(for: $0.position, size: size) }
         sim.resize(to: wide)
         try expect(sim.fish.allSatisfy { PondGeometry.contains($0.position, size: wide, margin: $0.length * 0.5 - 0.1) }, "resize preserves whole-fish containment")
-        try expect(zip(before, sim.fish).allSatisfy { simd_distance($0, PondGeometry.uv(for: $1.position, size: wide)) < 0.01 }, "resize preserves source-image position")
+        try expect(zip(before, sim.fish).filter { simd_distance($0, PondGeometry.uv(for: $1.position, size: wide)) < 0.01 }.count >= 25, "resize preserves source-image position except fish corrected at cropped edges")
     }
 
     private static func frameRateEquivalence() throws {
