@@ -77,7 +77,7 @@ try expect(sim.ripples.contains { $0.source == .rain }, "rain produces water imp
 
 **Files:** Modify `Sources/FishMesh.swift`, `Sources/OceanRenderer.swift`, `Resources/Ocean.metal`, `Tests/RenderTests.swift`, `scripts/test-renderer.sh`, `scripts/build.sh`; consume new `Resources/PondEnvironment.png` supplied by parent.
 
-**Interfaces:** Consume Task 1 types and shared geometry. Preserve `OceanRenderer.init(view:shaderURL:)`, `renderRGBA`, `writePNG`, `benchmarkGPU`. Load environment relative to shaderURL. Generate a water distance texture from shared geometry, sampled by every water-related layer. Resource errors must be readable and fail initialization rather than silently dropping the environment.
+**Interfaces:** Consume Task 1 types and shared geometry. Preserve `OceanRenderer.init(view:shaderURL:)`, `renderRGBA`, `writePNG`. Expose the completed command buffer's GPU duration for benchmark evidence. Load environment relative to shaderURL. Generate a water distance texture from shared geometry, sampled by every water-related layer. Resource errors must be readable and fail initialization rather than silently dropping the environment.
 
 - [ ] Replace ocean-specific fish mesh with tapered top-down koi body, paired fins, forked tail, eyes, appropriate dorsal detail. Keep independent tail/fin animation and rotate in the screen plane, without side-view yaw.
 - [ ] Draw opaque environment, submerged fish/shadows, restrained animated surface/refraction, local rain/click/leaf ripples, then leaves. Water mask bounds all aquatic effects. No baked static fish, rain rings or floating leaves in the environment.

@@ -30,3 +30,5 @@
 - 保留AppKit桌面层和DesktopInput过滤；旧海洋生物模型、边界及着色需替换。共享池岸距离约束模拟、鼠标和GPU遮罩。
 - 独立工作区 /Users/harvey/.codex/worktrees/overhead-pond/MacAquariumWallpaper，分支codex/overhead-pond。
 - 技能目录是符号链接，搜索writing-plans初次未跟随链接；已直接定位并读取。
+- imagegen已从批准图生成无鱼、无涟漪的环境底图，保持原岸线和树冠。按16:10源坐标映射；图中池水的树影/池底为基础纹理，实时水层产生流动折射。
+- 基线通过：模拟9项、输入25项，原渲染几何、长时相位、动画与环境检查全部通过。
