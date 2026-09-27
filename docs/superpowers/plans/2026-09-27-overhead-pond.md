@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Deliver the approved realistic overhead pond as an interactive macOS desktop wallpaper.
+**Goal:** Deliver the approved overhead pond as an interactive macOS desktop wallpaper, including the user-requested verdant rainy park revision and matching menu-bar backdrop.
 
 **Architecture:** A fish-free environment texture derived from the approved concept provides the natural bank and pond bed. A single shared shoreline geometry governs simulation, mouse hits and a renderer water mask. Native Metal draws independent koi, animated water/refraction, rainfall ripples and leaves; existing AppKit desktop window and input filtering remain.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Natural realistic style, fixed overhead camera, irregular pond, around 30 koi.
+- Detailed natural scenery with the latest verdant rainy park palette, fixed overhead camera, irregular pond, around 30 koi.
 - Click water creates ripples, briefly scatters nearby fish, then fish recover.
 - Rain lightly affects nearby fish; falling leaves land, ripple, float, attract a few nearby fish and respond to waves.
 - Main display, full desktop background below icons and applications, no focus/input interception, no network at runtime, no audio.
@@ -57,7 +57,7 @@ struct PondGeometry {
 
 **Interfaces:** Consume shared definitions above, produce deterministic scene snapshots for renderer and controller. Shoreline traced to `docs/concepts/pond-approved.png`; parent will adjust its coordinates if environment edit changes edges. Use a polygon in normalized image space and signed point-to-segment distance, plus soft steering and final containment accounting for half fish length. Initial points must have adequate clearance.
 
-- [ ] Write meaningful tests for 30 deterministic koi, water/land click distinction, local click falloff and bounded repeated clicks, rain start/stop and local mild response, actual leaf landing/floating/expiry/wave motion, boundary containment under repeated disturbances, resize/aspect mapping and 30/5 FPS equivalence.
+- [x] Write meaningful tests for 30 deterministic koi, water/land click distinction, local click falloff and bounded repeated clicks, rain start/stop and local mild response, actual leaf landing/floating/expiry/wave motion, boundary containment under repeated disturbances, resize/aspect mapping and 30/5 FPS equivalence.
 ```swift
 let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
 sim.click(at: SIMD2(5, 5))
@@ -69,9 +69,9 @@ sim.weather = .rainy
 for _ in 0..<300 { sim.update(deltaTime: 1 / 30) }
 try expect(sim.ripples.contains { $0.source == .rain }, "rain produces water impacts")
 ```
-- [ ] Run `bash scripts/test-simulation.sh`, record the initial failing requirement, implement and rerun.
-- [ ] Local rain events have weaker/smaller fish influence than clicks. Floating leaf approach is weak and limited to nearby fish; leaf water motion derives from nearby waves. Spawn leaves near visible overhanging trees and cap/expire all effects. Use continuous phase integration and seeded randomness.
-- [ ] Commit only owned files and write task report with test evidence. Other render/controller files may be temporarily incompatible until subsequent tasks.
+- [x] Run `bash scripts/test-simulation.sh`, record the initial failing requirement, implement and rerun.
+- [x] Local rain events have weaker/smaller fish influence than clicks. Floating leaf approach is weak and limited to nearby fish; leaf water motion derives from nearby waves. Spawn leaves near visible overhanging trees and cap/expire all effects. Use continuous phase integration and seeded randomness.
+- [x] Commit only owned files and write task report with test evidence. Other render/controller files may be temporarily incompatible until subsequent tasks.
 
 ### Task 2: Realistic Metal scene
 
@@ -79,15 +79,15 @@ try expect(sim.ripples.contains { $0.source == .rain }, "rain produces water imp
 
 **Interfaces:** Consume Task 1 types and shared geometry. Preserve `OceanRenderer.init(view:shaderURL:)`, `renderRGBA`, `writePNG`. Expose the completed command buffer's GPU duration for benchmark evidence. Load environment relative to shaderURL. Generate a water distance texture from shared geometry, sampled by every water-related layer. Resource errors must be readable and fail initialization rather than silently dropping the environment.
 
-- [ ] Replace ocean-specific fish mesh with tapered top-down koi body, paired fins, forked tail, eyes, appropriate dorsal detail. Keep independent tail/fin animation and rotate in the screen plane, without side-view yaw.
-- [ ] Draw opaque environment, submerged fish/shadows, restrained animated surface/refraction, local rain/click/leaf ripples, then leaves. Water mask bounds all aquatic effects. No baked static fish, rain rings or floating leaves in the environment.
+- [x] Replace ocean-specific fish mesh with tapered top-down koi body, paired fins, forked tail, eyes, appropriate dorsal detail. Keep independent tail/fin animation and rotate in the screen plane, without side-view yaw.
+- [x] Draw opaque environment, submerged fish/shadows, restrained animated surface/refraction, local rain/click/leaf ripples, then leaves. Water mask bounds all aquatic effects. No baked static fish, rain rings or floating leaves in the environment.
 ```swift
 let sunny = simulation.frame(waterStrength: 0.45)
 let pixels = try renderer.renderRGBA(frame: sunny, width: 1600, height: 1000)
 precondition(stride(from: 3, to: pixels.count, by: 4).allSatisfy { pixels[$0] == 255 })
 ```
-- [ ] Build render tests covering full opacity, `.empty`, no-fish vs fish image difference, land unchanged by ripples, underwater vs overwater layers, time continuity including day 7, dry/rain difference and multiple output aspect ratios. Export inspectable sunny/rain/click PNGs and an optional short video/animation preview from genuine frames. Run `zsh scripts/test-renderer.sh`.
-- [ ] Measure GPU at actual display resolution, optimize if needed to meet 30 FPS. Inspect exported images against approved visual reference and revise obvious appearance faults before committing. Commit owned files and report paths/results.
+- [x] Build render tests covering full opacity, `.empty`, no-fish vs fish image difference, land unchanged by ripples, underwater vs overwater layers, time continuity including day 7, dry/rain difference and multiple output aspect ratios. Export inspectable sunny/rain/click PNGs and an optional short video/animation preview from genuine frames. Run `zsh scripts/test-renderer.sh`.
+- [x] Measure GPU at actual display resolution, optimize if needed to meet 30 FPS. Inspect exported images against approved visual reference and revise obvious appearance faults before committing. Commit owned files and report paths/results.
 
 ### Task 3: Desktop controls and delivery
 
@@ -95,7 +95,7 @@ precondition(stride(from: 3, to: pixels.count, by: 4).allSatisfy { pixels[$0] ==
 
 **Interfaces:** Use simulation.weather for sunny/rainy switching, remove controller hover/drag simulation hooks; keep low-level desktop input filters. Rain amount transitions via simulation updates. Status text uses live fish count. Keep app executable/bundle identity to avoid competing application identities.
 
-- [ ] Replace user-facing ocean text with pond text, provide weather selection, show/pause/interaction/quit controls, no obsolete water-intensity submenu. Route only valid desktop clicks into simulation.
+- [x] Replace user-facing ocean text with pond text, provide weather selection, show/pause/interaction/quit controls, no obsolete water-intensity submenu. Route only valid desktop clicks into simulation.
 ```swift
 controller.weather = .rainy
 check(controller.simulation.weather == .rainy, "weather control reaches simulation")
@@ -104,8 +104,8 @@ let pausedTime = controller.simulation.time
 advance()
 check(controller.simulation.time == pausedTime, "pause freezes weather, leaves and fish")
 ```
-- [ ] Update native tests for 30 fish and weather/lifecycle behavior; run `bash scripts/test-input.sh`, `bash scripts/test-desktop.sh`, `bash scripts/build.sh`, strict signature verification.
-- [ ] Document full-scene desktop behavior, weather controls, local image asset origin, primary-screen limit and measured validation. Commit owned files with verification evidence.
+- [x] Update native tests for 30 fish and weather/lifecycle behavior; run `bash scripts/test-input.sh`, `bash scripts/test-desktop.sh`, `bash scripts/build.sh`, strict signature verification.
+- [x] Document full-scene desktop behavior, weather controls, local image asset origin, primary-screen limit and measured validation. Commit owned files with verification evidence.
 
 ## Final verification and local handoff
 
@@ -119,11 +119,11 @@ check(controller.simulation.time == pausedTime, "pause freezes weather, leaves a
 
 **Interfaces:** Main-actor `DesktopBackdrop` owns temporary NSWorkspace desktop-image changes on the current main screen, with apply/restore methods invoked by DesktopController. Use an application-support record (original URL and display options, target display ID and owned applied URL) and generated PNG frames in a dedicated app-owned directory. Preserve original image/options BEFORE setting any backdrop. Current view renderer.writePNG can capture a static pond frame at display backing resolution; render using target weatherAmount (0/1) for switching weather without waiting for transition. Use unique file URL per replacement so wallpaper caches refresh. Keep image aspect matched to screen. Never capture user screen pixels.
 
-- [ ] Apply on enable/start, update on weather or display geometry changes, restore on disable/stop. Pause retains backdrop, sleep/lock hide animation without restoring backdrop. Avoid per-frame disk writes or desktop-image changes.
-- [ ] Restore only when the screen currently uses this app's owned backdrop; preserve any newer user-selected wallpaper. Persist restoration record for restart after crash; clear records/old generated files only after successful replacement or restoration. Restore and keep prior screen record when changing main screen as possible; don't modify other monitors.
-- [ ] Handle apply/restore errors visibly in diagnostics/menu status; do not lose recovery records or overwrite original wallpaper if backup persistence fails. Prefer small focused helper, no global preference changes/private APIs.
-- [ ] Native tests check runtime scene URL is installed, weather replaces backing image URL, pause does not churn it, disable/stop restores original URL/options, and application/test lifecycle does not leave a background behind. Add focused fake-provider tests only if needed for failure/recovery/user-override state transitions; don't add generic frameworks.
-- [ ] Update docs: earlier no-system-wallpaper-change statement is superseded by the user's menu-bar requirement; describe reversible temporary background and any unverified dynamic-HEIC/Spaces behavior accurately. Run build, desktop/input checks and signature validation; commit independently.
+- [x] Apply on enable/start, update on weather or display geometry changes, restore on disable/stop. Pause retains backdrop, sleep/lock hide animation without restoring backdrop. Avoid per-frame disk writes or desktop-image changes.
+- [x] Restore only when the screen currently uses this app's owned backdrop; preserve any newer user-selected wallpaper. Persist restoration record for restart after crash; clear records/old generated files only after successful replacement or restoration. Restore and keep prior screen record when changing main screen as possible; don't modify other monitors.
+- [x] Handle apply/restore errors visibly in diagnostics/menu status; do not lose recovery records or overwrite original wallpaper if backup persistence fails. Prefer small focused helper, no global preference changes/private APIs.
+- [x] Native tests check runtime scene URL is installed, weather replaces backing image URL, pause does not churn it, disable/stop restores original URL/options, and application/test lifecycle does not leave a background behind. Add focused fake-provider tests only if needed for failure/recovery/user-override state transitions; don't add generic frameworks.
+- [x] Update docs: earlier no-system-wallpaper-change statement is superseded by the user's menu-bar requirement; describe reversible temporary background and any unverified dynamic-HEIC/Spaces behavior accurately. Run build, desktop/input checks and signature validation; commit independently.
 
 ### Task 5: Verdant rainy park art direction (user revision)
 
