@@ -1,173 +1,153 @@
 import Foundation
 import simd
 
-private struct TestFailure: Error, CustomStringConvertible {
-    let description: String
-}
-
+private struct TestFailure: Error, CustomStringConvertible { let description: String }
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-    if !condition() {
-        throw TestFailure(description: message)
-    }
-}
-
-private func isFinite(_ value: SIMD2<Float>) -> Bool {
-    value.x.isFinite && value.y.isFinite
+    if !condition() { throw TestFailure(description: message) }
 }
 
 @main
 private enum SimulationTests {
     static func main() throws {
-        try testInitialPopulationAndSeed()
-        try testClickFalloffAndRippleLimit()
-        try testRepeatedExactClicksRemainFinite()
-        try testDragEndsAndDecays()
-        try testFrameRateIndependence()
-        try testSoftEdgeTurning()
-        try testLongRunningBounds()
-        try testResizeScalesCoordinates()
-        try testFrameSnapshot()
+        try populationAndShoreline()
+        try waterClicksAndFalloff()
+        try repeatedClicksRecover()
+        try rainIsLocalAndMild()
+        try leavesLandFloatMoveAndExpire()
+        try shorelineContainsWholeFish()
+        try resizeAndAspectMapping()
+        try frameRateEquivalence()
+        try frameSnapshot()
         print("SimulationTests: 9 passed")
     }
 
-    private static func testInitialPopulationAndSeed() throws {
-        let first = OceanSimulation(size: SIMD2(1440, 900), seed: 7)
-        let second = OceanSimulation(size: SIMD2(1440, 900), seed: 7)
-
-        try expect(first.fish.count == 29, "expected 29 fish")
-        let counts = Dictionary(grouping: first.fish, by: \.species).mapValues(\.count)
-        try expect(counts[.silver] == 18, "expected 18 silver fish")
-        try expect(counts[.clown] == 4, "expected 4 clown fish")
-        try expect(counts[.tang] == 3, "expected 3 tang fish")
-        try expect(counts[.butterfly] == 3, "expected 3 butterfly fish")
-        try expect(counts[.manta] == 1, "expected one manta")
-        try expect(first.fish.map(\.position) == second.fish.map(\.position), "same seed must reproduce positions")
-        try expect(first.fish.filter { $0.species == .manta }.allSatisfy { (200...300).contains($0.length) }, "manta size should be 200...300 points at desktop scale")
-        try expect(first.fish.filter { $0.species != .manta }.allSatisfy { (60...130).contains($0.length) }, "small and medium fish should be 60...130 points at desktop scale")
+    private static func populationAndShoreline() throws {
+        let a = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let b = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        try expect(a.fish.count == 30, "pond needs 30 koi")
+        try expect(a.fish.allSatisfy { $0.species == .koi }, "all fish should be koi")
+        try expect(a.fish.map(\.position) == b.fish.map(\.position), "seed must reproduce positions")
+        try expect(a.fish.allSatisfy { PondGeometry.contains($0.position, size: a.size, margin: $0.length * 0.5) }, "initial fish need whole-body clearance")
+        try expect(!PondGeometry.contains(SIMD2(5, 5), size: a.size), "lower-left land should stay land")
+        try expect(PondGeometry.contains(SIMD2(800, 500), size: a.size), "center should be water")
+        try expect(!PondGeometry.contains(PondGeometry.point(for: SIMD2(0.65625, 0.16), size: a.size), size: a.size), "north bank must use top-left image coordinates")
+        try expect(PondGeometry.contains(PondGeometry.point(for: SIMD2(0.65625, 0.78), size: a.size), size: a.size), "south-east water should stay water")
+        try expect(!PondGeometry.contains(PondGeometry.point(for: SIMD2(0.90625, 0.75), size: a.size), size: a.size), "right tree canopy should stay outside water")
     }
 
-    private static func testClickFalloffAndRippleLimit() throws {
-        let simulation = OceanSimulation(size: SIMD2(1200, 800), seed: 19)
-        let origin = simulation.fish[0].position
-        let farIndex = simulation.fish.indices.max {
-            simd_distance(simulation.fish[$0].position, origin) < simd_distance(simulation.fish[$1].position, origin)
-        }!
-
-        simulation.click(at: origin)
-
-        try expect(simulation.fish[0].panic > simulation.fish[farIndex].panic, "click panic must decrease with distance")
-        try expect(simulation.ripples.count == 2, "a click should create two soft ripples")
-        for _ in 0..<40 { simulation.click(at: origin) }
-        try expect(simulation.ripples.count <= 16, "ripples must be capped")
+    private static func waterClicksAndFalloff() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        sim.click(at: SIMD2(5, 5))
+        try expect(sim.ripples.isEmpty, "land click creates no ripple")
+        let hit = sim.fish[0].position
+        let far = sim.fish.indices.max { simd_distance(sim.fish[$0].position, hit) < simd_distance(sim.fish[$1].position, hit) }!
+        sim.click(at: hit)
+        try expect(sim.fish[0].panic > 0, "near fish scatters")
+        try expect(sim.fish[0].panic > sim.fish[far].panic, "click influence falls with distance")
+        try expect(sim.ripples.allSatisfy { $0.source == .click && PondGeometry.contains($0.position, size: sim.size) }, "click ripples stay in water")
     }
 
-    private static func testRepeatedExactClicksRemainFinite() throws {
-        let simulation = OceanSimulation(size: SIMD2(1200, 800), seed: 31)
-        let exactPosition = simulation.fish[0].position
-        for _ in 0..<80 { simulation.click(at: exactPosition) }
-        for _ in 0..<120 { simulation.update(deltaTime: 1 / 60) }
+    private static func repeatedClicksRecover() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let hit = sim.fish[0].position
+        for _ in 0..<100 { sim.click(at: hit) }
+        try expect(sim.ripples.count <= 24, "click effects must be bounded")
+        for _ in 0..<180 { sim.update(deltaTime: 1 / 30) }
+        try expect(sim.fish.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && simd_length($0.velocity) < 240 }, "click storm remains finite and bounded")
+        try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
+    }
 
-        for fish in simulation.fish {
-            try expect(isFinite(fish.position) && isFinite(fish.velocity), "exact click storm must keep fish state finite")
-            try expect(fish.heading.isFinite && fish.panic.isFinite, "exact click storm must keep scalars finite")
-            try expect(simd_length(fish.velocity) < 350, "interaction must keep fish speed bounded")
+    private static func rainIsLocalAndMild() throws {
+        let rainy = OceanSimulation(size: SIMD2(1600, 1000), seed: 11)
+        let dry = OceanSimulation(size: SIMD2(1600, 1000), seed: 11)
+        rainy.weather = .rainy
+        for _ in 0..<300 {
+            rainy.update(deltaTime: 1 / 30)
+            dry.update(deltaTime: 1 / 30)
+        }
+        try expect(rainy.ripples.contains { $0.source == .rain }, "rain produces water impacts")
+        try expect(rainy.ripples.count <= 24, "rain ripples are capped")
+        try expect(rainy.ripples.allSatisfy { PondGeometry.contains($0.position, size: rainy.size) && ($0.source != .rain || $0.strength < 1) }, "rain is water-only and weaker than clicks")
+        try expect(rainy.fish.allSatisfy { $0.panic < 0.5 }, "rain cannot cause click-sized panic")
+        try expect(zip(rainy.fish, dry.fish).contains { simd_distance($0.position, $1.position) > 0.1 }, "rain must actually affect nearby fish")
+        rainy.weather = .sunny
+        for _ in 0..<120 { rainy.update(deltaTime: 1 / 30) }
+        try expect(!rainy.ripples.contains { $0.source == .rain }, "rain effects expire after weather stops")
+        try expect(rainy.frame(waterStrength: 0.5).weatherAmount < 0.01, "rain amount fades away")
+    }
+
+    private static func leavesLandFloatMoveAndExpire() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        let calm = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        for _ in 0..<180 {
+            sim.update(deltaTime: 1 / 30)
+            calm.update(deltaTime: 1 / 30)
+        }
+        try expect(!sim.leaves.isEmpty, "overhanging trees drop leaves")
+        try expect(sim.leaves.contains { $0.stage == .floating }, "leaves land and float")
+        try expect(sim.ripples.contains { $0.source == .leaf }, "landing makes a ripple")
+        try expect(sim.leaves.count <= 12, "leaf count is bounded")
+        let floating = sim.leaves.first { $0.stage == .floating }!
+        let position = floating.position
+        sim.click(at: position)
+        for _ in 0..<30 {
+            sim.update(deltaTime: 1 / 30)
+            calm.update(deltaTime: 1 / 30)
+        }
+        if let moved = sim.leaves.first(where: { $0.id == floating.id }) {
+            let undisturbed = calm.leaves.first { $0.id == floating.id }!
+            try expect(simd_distance(position, moved.position) > 0.1, "floating leaves move")
+            try expect(simd_distance(undisturbed.position, moved.position) > 0.1, "floating leaves respond to nearby waves")
+        }
+        for _ in 0..<900 { sim.update(deltaTime: 1 / 30) }
+        try expect(sim.leaves.allSatisfy { $0.age < 16 && $0.opacity >= 0 && $0.opacity <= 1 }, "old leaves expire and opacity stays valid")
+    }
+
+    private static func shorelineContainsWholeFish() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 41)
+        for tick in 0..<1800 {
+            if tick % 12 == 0 { sim.click(at: sim.fish[tick / 12 % sim.fish.count].position) }
+            sim.update(deltaTime: 1 / 30)
+            for fish in sim.fish {
+                try expect(PondGeometry.contains(fish.position, size: sim.size, margin: fish.length * 0.5 - 0.1), "whole fish must remain in water")
+                try expect(fish.phase >= 0 && fish.phase < 2 * .pi && fish.heading.isFinite, "animation remains finite and wrapped")
+            }
         }
     }
 
-    private static func testDragEndsAndDecays() throws {
-        let simulation = OceanSimulation(size: SIMD2(1000, 700), seed: 3)
-        simulation.drag(to: SIMD2(200, 300))
-        simulation.drag(to: SIMD2(280, 330))
-        simulation.drag(to: SIMD2(360, 360))
-        try expect(!simulation.currents.isEmpty, "drag should create current strokes")
-        try expect(simulation.currents.count <= 48, "current strokes must be capped")
-
-        simulation.endDrag()
-        for _ in 0..<240 { simulation.update(deltaTime: 1 / 60) }
-        try expect(simulation.currents.isEmpty, "ended drag currents should decay away")
-        try expect(simulation.fish.allSatisfy { $0.panic < 0.15 }, "fish should recover after disturbance")
+    private static func resizeAndAspectMapping() throws {
+        let size = SIMD2<Float>(1600, 1000)
+        let wide = SIMD2<Float>(1920, 1080)
+        let point = SIMD2<Float>(820, 450)
+        let uv = PondGeometry.uv(for: point, size: size)
+        try expect(simd_distance(PondGeometry.point(for: uv, size: size), point) < 0.01, "native mapping round trips")
+        let widePoint = PondGeometry.point(for: uv, size: wide)
+        try expect(simd_distance(PondGeometry.uv(for: widePoint, size: wide), uv) < 0.0001, "aspect-fill mapping round trips")
+        let sim = OceanSimulation(size: size, seed: 3)
+        let before = sim.fish.map { PondGeometry.uv(for: $0.position, size: size) }
+        sim.resize(to: wide)
+        try expect(sim.fish.allSatisfy { PondGeometry.contains($0.position, size: wide, margin: $0.length * 0.5 - 0.1) }, "resize preserves whole-fish containment")
+        try expect(zip(before, sim.fish).allSatisfy { simd_distance($0, PondGeometry.uv(for: $1.position, size: wide)) < 0.01 }, "resize preserves source-image position")
     }
 
-    private static func testFrameRateIndependence() throws {
-        let thirtyFPS = OceanSimulation(size: SIMD2(1280, 720), seed: 13)
-        let fiveFPS = OceanSimulation(size: SIMD2(1280, 720), seed: 13)
-        for _ in 0..<120 { thirtyFPS.update(deltaTime: 1 / 30) }
-        for _ in 0..<20 { fiveFPS.update(deltaTime: 1 / 5) }
-
-        try expect(abs(thirtyFPS.time - 4) < 0.001, "30 FPS run should consume the full duration")
-        try expect(abs(fiveFPS.time - 4) < 0.001, "5 FPS run should consume the full duration")
-        let largestDifference = zip(thirtyFPS.fish, fiveFPS.fish)
-            .map { simd_distance($0.position, $1.position) }
-            .max() ?? 0
-        try expect(largestDifference < 0.1, "equal durations at 30 and 5 FPS should produce equivalent state")
-
-        let longFrame = OceanSimulation(size: SIMD2(900, 600), seed: 2)
-        longFrame.update(deltaTime: 0.5)
-        try expect(abs(longFrame.time - 0.5) < 0.0001, "a reasonable long frame must not discard elapsed time")
+    private static func frameRateEquivalence() throws {
+        let fast = OceanSimulation(size: SIMD2(1600, 1000), seed: 13)
+        let slow = OceanSimulation(size: SIMD2(1600, 1000), seed: 13)
+        fast.weather = .rainy
+        slow.weather = .rainy
+        for _ in 0..<120 { fast.update(deltaTime: 1 / 30) }
+        for _ in 0..<20 { slow.update(deltaTime: 1 / 5) }
+        try expect(abs(fast.time - 4) < 0.001 && abs(slow.time - 4) < 0.001, "both frame rates consume full duration")
+        try expect(zip(fast.fish, slow.fish).allSatisfy { simd_distance($0.position, $1.position) < 0.2 }, "30 and 5 FPS fish positions agree")
+        try expect(fast.ripples.count == slow.ripples.count && fast.leaves.count == slow.leaves.count, "event counts agree across frame rates")
     }
 
-    private static func testSoftEdgeTurning() throws {
-        let size = SIMD2<Float>(800, 600)
-        let simulation = OceanSimulation(size: size, seed: 23)
-        let candidate = simulation.fish.min { $0.position.x < $1.position.x }!
-        let clickPoint = candidate.position + SIMD2<Float>(90, 0)
-        for _ in 0..<6 { simulation.click(at: clickPoint) }
-
-        var turnedInward = false
-        for _ in 0..<600 {
-            simulation.update(deltaTime: 1 / 60)
-            let state = simulation.fish[candidate.id]
-            try expect(state.position.x > 0 && state.position.x < size.x, "soft steering should avoid the horizontal hard boundary")
-            try expect(state.position.y > 0 && state.position.y < size.y, "soft steering should avoid the vertical hard boundary")
-            if state.velocity.x > 0 { turnedInward = true }
-        }
-        try expect(turnedInward, "a fish driven toward an edge should turn inward")
-    }
-
-    private static func testLongRunningBounds() throws {
-        let size = SIMD2<Float>(1280, 720)
-        let simulation = OceanSimulation(size: size, seed: 41)
-        simulation.pointerMoved(to: SIMD2(640, 360))
-        simulation.click(at: SIMD2(500, 300))
-        for step in 0..<3_600 {
-            if step == 90 { simulation.pointerMoved(to: nil) }
-            simulation.update(deltaTime: 1 / 60)
-        }
-
-        for fish in simulation.fish {
-            try expect(isFinite(fish.position) && isFinite(fish.velocity), "fish state must remain finite")
-            try expect(fish.position.x >= 0 && fish.position.x <= size.x, "fish x must remain bounded")
-            try expect(fish.position.y >= 0 && fish.position.y <= size.y, "fish y must remain bounded")
-            try expect(fish.heading.isFinite && fish.panic.isFinite, "heading and panic must remain finite")
-            try expect(fish.panic < 0.02, "panic should return to rest")
-            try expect(fish.phase >= 0 && fish.phase < 2 * .pi, "animation phase should remain wrapped")
-        }
-    }
-
-    private static func testResizeScalesCoordinates() throws {
-        let simulation = OceanSimulation(size: SIMD2(800, 600), seed: 11)
-        let before = simulation.fish.map(\.position)
-        simulation.pointerMoved(to: SIMD2(400, 300))
-        simulation.drag(to: SIMD2(100, 120))
-        simulation.drag(to: SIMD2(180, 180))
-        simulation.resize(to: SIMD2(1600, 900))
-
-        for index in before.indices {
-            let expected = before[index] * SIMD2<Float>(2, 1.5)
-            try expect(simd_distance(simulation.fish[index].position, expected) < 0.01, "resize should scale fish positions")
-        }
-        try expect(simulation.size == SIMD2<Float>(1600, 900), "resize should publish the new size")
-        try expect(simulation.currents.allSatisfy { $0.position.x <= 1600 && $0.position.y <= 900 }, "resize should keep effects in bounds")
-    }
-
-    private static func testFrameSnapshot() throws {
-        let simulation = OceanSimulation(size: SIMD2(900, 600), seed: 5)
-        simulation.update(deltaTime: 0.25)
-        let frame = simulation.frame(waterStrength: 0.7)
-        try expect(frame.size == simulation.size, "frame size should match simulation")
-        try expect(Float(frame.time) == simulation.time, "frame time should match simulation diagnostics")
-        try expect(frame.fish.count == 29, "frame should contain all fish")
-        try expect(frame.waterStrength == 0.7, "frame should preserve requested water strength")
-        try expect(abs(frame.time - 0.25) < 0.0001, "frame time should include the full update interval")
+    private static func frameSnapshot() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 5)
+        sim.update(deltaTime: 0.25)
+        let frame = sim.frame(waterStrength: 0.7)
+        try expect(frame.size == sim.size && frame.fish.count == 30, "frame exposes simulation")
+        try expect(abs(frame.time - 0.25) < 0.0001 && frame.waterStrength == 0.7, "frame preserves time and strength")
+        try expect(frame.leaves.count == sim.leaves.count && frame.weatherAmount == 0, "frame exposes leaves and weather")
     }
 }

@@ -2,8 +2,12 @@ import Foundation
 import simd
 
 enum FishSpecies: Int, CaseIterable {
-    case silver, clown, tang, butterfly, manta
+    case koi
 }
+
+enum PondWeather: String { case sunny, rainy }
+enum DisturbanceKind: Int { case click, rain, leaf }
+enum LeafStage: Int { case falling, floating, grounded }
 
 // All positions are screen points, with the origin at the screen's bottom left.
 struct FishState {
@@ -22,12 +26,19 @@ struct Ripple {
     var position: SIMD2<Float>
     var age: Float
     var strength: Float
+    var source: DisturbanceKind = .click
 }
 
-struct CurrentStroke {
+struct PondLeaf {
+    var id: Int
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
     var age: Float
+    var rotation: Float
+    var length: Float
+    var stage: LeafStage
+    var fallDuration: Float
+    var opacity: Float
 }
 
 struct OceanFrame {
@@ -35,8 +46,9 @@ struct OceanFrame {
     var time: Double
     var fish: [FishState]
     var ripples: [Ripple]
-    var currents: [CurrentStroke]
     var waterStrength: Float
+    var leaves: [PondLeaf] = []
+    var weatherAmount: Float = 0
 
-    static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], currents: [], waterStrength: 0)
+    static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], waterStrength: 0)
 }

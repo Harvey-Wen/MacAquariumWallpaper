@@ -13,6 +13,7 @@ swiftc \
     -sdk "$sdk_path" \
     -target arm64-apple-macosx14.0 \
     "$project_dir/Sources/OceanTypes.swift" \
+    "$project_dir/Sources/PondGeometry.swift" \
     "$project_dir/Sources/OceanSimulation.swift" \
     "$project_dir/Tests/SimulationTests.swift" \
     -o "$build_dir/SimulationTests"
