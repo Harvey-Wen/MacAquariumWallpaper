@@ -11,6 +11,7 @@ private enum SimulationTests {
     static func main() throws {
         try populationAndShoreline()
         try waterClicksAndFalloff()
+        try directionalTravelResizes()
         try pointerMovementIsQuietAndBounded()
         try pointerReentryAndJumpDoNotBridge()
         try pointerAvoidanceIsMildAndLocal()
@@ -25,7 +26,7 @@ private enum SimulationTests {
         try frameRateEquivalence()
         try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 16 passed")
+        print("SimulationTests: 17 passed")
     }
 
     private static func populationAndShoreline() throws {
@@ -67,6 +68,21 @@ private enum SimulationTests {
         for _ in 0..<180 { sim.update(deltaTime: 1 / 30) }
         try expect(sim.fish.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && simd_length($0.velocity) < 240 }, "click storm remains finite and bounded")
         try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
+    }
+
+    private static func directionalTravelResizes() throws {
+        let sim = OceanSimulation(size: SIMD2(1600,1000), seed: 7)
+        sim.trackPointer(SIMD2(700,500))
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(SIMD2(730,520))
+        try expect(sim.ripples[0].travel == SIMD2(30,20), "accepted motion keeps direction and segment length")
+        sim.resize(to: SIMD2(1920,1200))
+        try expect(simd_distance(sim.ripples[0].travel, SIMD2(36,24)) < 0.001, "resize scales travel with scene geometry")
+        let count = sim.ripples.count
+        sim.trackPointer(SIMD2(900,600))
+        try expect(sim.ripples.count == count, "resize resets pointer baseline")
+        sim.click(at: SIMD2(900,600))
+        try expect(sim.ripples.suffix(2).allSatisfy { $0.travel == .zero && $0.source == .click }, "clicks retain independent radial impulses")
     }
 
     private static func pointerMovementIsQuietAndBounded() throws {

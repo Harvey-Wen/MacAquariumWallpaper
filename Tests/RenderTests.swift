@@ -34,6 +34,71 @@ import ImageIO
         var click = sunny
         click.ripples = [Ripple(position: SIMD2(1150,450),age: 0.65,strength: 1.5)]
         try renderer.writePNG(frame: click,width: 1600,height: 1000,to: output.appendingPathComponent("pond-click.png"))
+        // Signed relief, directionality, refraction of fish, cache resizing and expiry.
+        var wake = noFish
+        wake.ripples = [Ripple(position: SIMD2(850,500),age: 0.3,strength: 0.65,source: .motion,travel: SIMD2(100,0))]
+        let horizontal = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
+        try renderer.writePNG(frame: wake,width: 1600,height: 1000,to: output.appendingPathComponent("pond-cursor-wake.png"))
+        var bright=0, dark=0
+        for i in stride(from: 0,to: plain.count,by: 4) {
+            let relief=(0..<3).reduce(0) { $0 + Int(horizontal[i+$1])-Int(plain[i+$1]) }
+            if relief > 5 { bright += 1 }; if relief < -5 { dark += 1 }
+        }
+        precondition(bright > 100 && dark > 100, "Wakes need signed lit/dark relief")
+        wake.ripples[0].travel = SIMD2(0,100)
+        let vertical = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
+        precondition(delta(horizontal,vertical)>0.00001, "Motion direction must change wake orientation")
+        func wakeExtent(_ bytes: [UInt8]) -> (Double,Double) {
+            var xx=0.0, yy=0.0
+            for y in 350..<650 { for x in 700..<1000 {
+                let i=(y*1600+x)*4
+                let weight=Double((0..<3).reduce(0) { $0 + abs(Int(bytes[i+$1])-Int(plain[i+$1])) })
+                xx += weight*pow(Double(x)-850,2); yy += weight*pow(Double(y)-500,2)
+            }}
+            return (xx,yy)
+        }
+        let h = wakeExtent(horizontal), v = wakeExtent(vertical)
+        precondition(h.0 > h.1*2 && v.1 > v.0*2, "Wake must follow its finite travel strip, not stamp circles")
+        var refracted = wake
+        refracted.fish = [FishState(id: 1,species: .koi,position: SIMD2(842,465),velocity: .zero,heading: 0,length: 95,depth: 0.3,phase: 0,panic: 0)]
+        let wetFish = try renderer.renderRGBA(frame: refracted,width: 1600,height: 1000)
+        refracted.ripples = []
+        let dryFish = try renderer.renderRGBA(frame: refracted,width: 1600,height: 1000)
+        var refractedSamples=0
+        for y in 490..<590 { for x in 780..<910 {
+            let i=(y*1600+x)*4
+            var changed = false
+            for c in 0..<3 {
+                let fishChange = Int(wetFish[i+c]) - Int(dryFish[i+c])
+                let backgroundChange = Int(vertical[i+c]) - Int(plain[i+c])
+                if abs(fishChange - backgroundChange) > 4 { changed = true }
+            }
+            if changed { refractedSamples += 1 }
+        }}
+        precondition(refractedSamples > 30, "Wave must refract underwater fish as well as background")
+        let frozenWake = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
+        precondition(frozenWake == vertical)
+        _ = try renderer.renderRGBA(frame: wake,width: 900,height: 700)
+        let resizedBack = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
+        precondition(resizedBack == vertical, "Target recreation preserves mapping and frame identity")
+        for dimensions in [(800,500),(1200,750)] {
+            let base = try renderer.renderRGBA(frame: noFish,width: dimensions.0,height: dimensions.1)
+            let displaced = try renderer.renderRGBA(frame: wake,width: dimensions.0,height: dimensions.1)
+            var localChanges = 0
+            for y in 0..<dimensions.1 { for x in 0..<dimensions.0 {
+                let i=(y*dimensions.0+x)*4
+                if (0..<3).contains(where: { base[i+$0] != displaced[i+$0] }) {
+                    let point = SIMD2<Float>((Float(x)+0.5)*1600/Float(dimensions.0),1000-(Float(y)+0.5)*1000/Float(dimensions.1))
+                    precondition(abs(point.x-850)<85 && point.y>350 && point.y<550, "Refraction must preserve bottom-left point mapping at every backing size")
+                    localChanges += 1
+                }
+            }}
+            precondition(localChanges>100)
+        }
+        wake.ripples[0].age = 2.3
+        let expiredWake = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
+        precondition(expiredWake == plain, "Expired wake leaves no painted residue")
+        print("PASS signed wake: \(bright) bright / \(dark) dark; \(refractedSamples) refracted fish samples, oriented strip, deterministic resize and expiry.")
         var landRipple = noFish
         landRipple.ripples = [Ripple(position: SIMD2(200,750),age: 1.0,strength: 1.8)]
         let ripplePixels = try renderer.renderRGBA(frame: landRipple,width: 1600,height: 1000)
@@ -70,15 +135,24 @@ import ImageIO
         let withRain = try renderer.renderRGBA(frame: rainImpacts,width: 1600,height: 1000)
         var withoutImpacts = rainImpacts; withoutImpacts.ripples = []
         let withoutRain = try renderer.renderRGBA(frame: withoutImpacts,width: 1600,height: 1000)
-        var changedWater = 0, foliageChecked = 0
+        var changedWater = 0, foliageChecked = 0, rainBright = 0, rainDark = 0
         for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
             let distance = PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: rainy.size)
             let i = (y*1600+x)*4
             let same = (0..<4).allSatisfy { withRain[i+$0] == withoutRain[i+$0] }
             if distance < -5 { precondition(same, "Rain impacts must leave foliage unchanged"); foliageChecked += 1 }
-            if distance > 5 && !same { changedWater += 1 }
+            if distance > 5 && !same {
+                changedWater += 1
+                let signed = (0..<3).reduce(0) { $0 + Int(withRain[i+$1]) - Int(withoutRain[i+$1]) }
+                if signed > 3 { rainBright += 1 }; if signed < -3 { rainDark += 1 }
+            }
         }}
         precondition(foliageChecked > 1000)
+        precondition(rainBright > 50 && rainDark > 50, "Rain relief must contain both lit and dark slopes")
+        var expiredRain = rainImpacts
+        for i in expiredRain.ripples.indices { expiredRain.ripples[i].age = 1.4 }
+        let expiredRainPixels = try renderer.renderRGBA(frame: expiredRain,width: 1600,height: 1000)
+        precondition(expiredRainPixels == withoutRain, "Rain waves must fully expire")
         precondition(changedWater > 100, "Rain impacts must visibly change water independently of dimming")
         print("PASS rain impacts: \(rainImpacts.ripples.count) active, \(changedWater) changed water samples; land unchanged.")
         var wet = noFish; wet.weatherAmount = 1
@@ -116,9 +190,9 @@ import ImageIO
             let next = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
             let d = delta(lastRain,next); precondition(d > 0.00001 && d < 0.005); lastRain = next
         }
-        streaks.time = 604802 - 0.0001
+        streaks.time = 604808 - 0.0001
         let wrapBefore = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        streaks.time = 604802 + 0.0001
+        streaks.time = 604808 + 0.0001
         let wrapAfter = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
         precondition(delta(wrapBefore,wrapAfter) < delta(frozenRain,nextRain)*0.1, "Rain period must wrap without a visible reset")
         streaks.time = 604800
@@ -183,7 +257,7 @@ import ImageIO
             precondition(stride(from: 3,to: bytes.count,by: 4).allSatisfy { bytes[$0]==255 })
             try renderer.writePNG(frame: sample,width: Int(size.x),height: Int(size.y),to: output.appendingPathComponent("pond-\(Int(size.x))x\(Int(size.y)).png"))
         }
-        let primary = OceanSimulation(size: SIMD2(3024,1964),seed: 42)
+        let primary = OceanSimulation(size: SIMD2(1512,982),seed: 42)
         for _ in 0..<180 { primary.update(deltaTime: 1.0/30) }
         try renderer.writePNG(frame: primary.frame(waterStrength: 0.45),width: 3024,height: 1964,to: output.appendingPathComponent("pond-primary-sunny.png"))
         primary.weather = .rainy
@@ -201,20 +275,28 @@ import ImageIO
         print("GPU \(view.device!.name) 3024x1964 rainy: median \(timings[15]) ms; p95 \(timings[28]) ms; max \(timings.last!) ms (30 measured frames).")
         precondition(timings[28]<1000/30)
         if CommandLine.arguments.contains("--preview") {
-            let url=output.appendingPathComponent("pond-preview.gif")
-            let destination=CGImageDestinationCreateWithURL(url as CFURL,"com.compuserve.gif" as CFString,60,nil)!
-            CGImageDestinationSetProperties(destination,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFLoopCount:0]] as CFDictionary)
-            for index in 0..<60 {
-                primary.update(deltaTime: 1.0/15)
-                if index % 15 == 0 || index == 59 {
-                    try renderer.writePNG(frame: primary.frame(waterStrength: 0.45),width: 1512,height: 982,to: output.appendingPathComponent("preview-frame-\(index).png"))
+            for motion in [false,true] {
+                let name = motion ? "pond-cursor-preview" : "pond-preview"
+                let url=output.appendingPathComponent("\(name).gif")
+                let destination=CGImageDestinationCreateWithURL(url as CFURL,"com.compuserve.gif" as CFString,60,nil)!
+                CGImageDestinationSetProperties(destination,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFLoopCount:0]] as CFDictionary)
+                let preview = OceanSimulation(size: SIMD2(1512,982),seed: 42)
+                preview.weather = motion ? .sunny : .rainy
+                for _ in 0..<240 { preview.update(deltaTime: 1.0/30) }
+                for index in 0..<60 {
+                    preview.update(deltaTime: 1.0/15)
+                    if motion && index < 35 { preview.trackPointer(SIMD2(490+Float(index)*10,480+sin(Float(index)*0.12)*55)) }
+                    let frame = preview.frame(waterStrength: 0.45)
+                    if index % 15 == 0 || index == 59 {
+                        try renderer.writePNG(frame: frame,width: 1512,height: 982,to: output.appendingPathComponent("\(name)-frame-\(index).png"))
+                    }
+                    let bytes=try renderer.renderRGBA(frame: frame,width: 1512,height: 982)
+                    let data=Data(bytes) as CFData
+                    let image=CGImage(width:1512,height:982,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:6048,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:data)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!
+                    CGImageDestinationAddImage(destination,image,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFDelayTime:0.067]] as CFDictionary)
                 }
-                let bytes=try renderer.renderRGBA(frame: primary.frame(waterStrength: 0.45),width: 756,height: 491)
-                let data=Data(bytes) as CFData
-                let image=CGImage(width:756,height:491,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:3024,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:data)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!
-                CGImageDestinationAddImage(destination,image,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFDelayTime:0.067]] as CFDictionary)
+                precondition(CGImageDestinationFinalize(destination))
             }
-            precondition(CGImageDestinationFinalize(destination))
         }
         print("Outputs: \(output.path)")
     }

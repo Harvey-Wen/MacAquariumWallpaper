@@ -2,7 +2,7 @@
 using namespace metal;
 struct FishVertex { float4 position, normal, detail; };
 struct FishUniforms { float4 viewport, placement, motion, kind; };
-struct EffectUniforms { float4 viewport, placement, style; };
+struct EffectUniforms { float4 viewport, placement, style, travel; };
 struct VertexOut { float4 position [[position]]; float2 point; float3 local; float3 normal; float4 detail; };
 constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
 float2 imageUV(float2 p, float2 size) {
@@ -74,18 +74,34 @@ vertex VertexOut effectVertex(uint id [[vertex_id]], constant EffectUniforms &u 
 }
 fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
     if(u.style.x>3.5) {
-        // Sheared screen-space rain: eight rows repeat seamlessly every two seconds.
-        float2 grid=float2(in.point.x+in.point.y*0.28,in.point.y+u.style.y*560)/float2(34,140);
-        float2 cell=floor(grid), local=fract(grid);
-        float seed=hash(float2(cell.x,fmod(cell.y,8.0)));
-        float center=0.18+seed*0.64;
-        float width=(0.45+seed*0.30)/34;
-        float line=1-smoothstep(width,width+fwidth(grid.x),abs(local.x-center));
-        float along=(local.y-(0.22+hash(float2(cell.x+67,fmod(cell.y,8.0)))*0.56))*140;
-        float streak=line*(1-smoothstep(5.0+seed*8,12.0+seed*10,abs(along)));
-        float alpha=streak*u.style.z*(0.10+seed*0.10);
+        // Independently phased sparse drops at three depths. Eight-second wrapping is
+        // reduced in Double on the CPU; each local reset disappears through a fade.
+        float alpha=0;
+        for(int layer=0;layer<3;layer++) {
+            float spacing=78+layer*58;
+            float2 grid=in.point/spacing;
+            float2 cell=floor(grid), local=fract(grid)*spacing;
+            float seed=hash(cell+float2(layer*71,layer*113));
+            float other=hash(cell+float2(41+layer*17,93));
+            float cycles=3+floor(other*4);
+            float t=fract(u.style.y*cycles/8+seed);
+            float fade=smoothstep(0.0,0.13,t)*(1-smoothstep(0.78,1.0,t));
+            float wind=0.12+0.12*sin(u.style.y*0.785398);
+            float2 direction=normalize(float2(wind+(other-0.5)*0.5,-1));
+            float2 center=float2(spacing*(0.25+other*0.5),spacing*(0.85-0.70*t));
+            center.x+=direction.x*(t-0.5)*spacing*0.5;
+            float2 d=local-center;
+            float across=dot(d,float2(-direction.y,direction.x));
+            float along=dot(d,direction);
+            float width=0.40+layer*0.27;
+            float length=0.8+layer*1.1+seed*seed*(1+layer);
+            float drop=exp(-across*across/(width*width)-along*along/(length*length));
+            alpha+=drop*fade*(0.09+layer*0.035+other*0.08);
+        }
+        alpha*=u.style.z;
         return float4(float3(0.70,0.84,0.78)*alpha,alpha);
     }
+
     float2 uv=imageUV(in.point,u.viewport.xy); float water=maskAt(in.point,u.viewport.xy,mask);
     float phase=u.viewport.z, phase2=u.viewport.w;
     float2 wave=float2(sin(uv.y*67+sin(uv.x*35+phase2)*1.4+phase),cos(uv.x*59+sin(uv.y*29+phase)*1.3+phase2));
@@ -99,15 +115,6 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
         float glint=pow(max(0.0,wave.x*wave.y),8.0);
         float alpha=water*u.style.z*(0.009+glint*0.055);
         return float4(float3(0.60,0.76,0.67)*alpha,alpha);
-    }
-    if(u.style.x<2.5) {
-        float r=length(in.point-u.placement.xy), radius=u.style.y*95;
-        float lifetime=u.style.w>0.5?1.4:2.3;
-        float fade=pow(max(0.0,1-u.style.y/lifetime),u.style.w>0.5 ? 0.8 : 1.5)*smoothstep(0.0,0.08,u.style.y);
-        float d=r-radius;
-        float ring=exp(-d*d/2.0)+0.45*exp(-pow(d+5,2.0)/2.4)+0.18*exp(-pow(d+10,2.0)/3.0);
-        float alpha=ring*fade*u.style.z*water*(u.style.w>0.5 ? 1.8 : 0.32);
-        return float4(float3(0.66,0.77,0.72)*alpha,alpha);
     }
     float2 p=in.local.xy;
     // An asymmetric five-lobed maple leaf, with a curled blade and branching veins.
@@ -131,4 +138,66 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
     color=mix(color,color*0.65+float3(0.07,0.10,0.015),vein*0.60);
     color*=0.79+0.21*smoothstep(0.0,0.09,edge-r);
     return float4(color*alpha,alpha);
+}
+
+// Wave gradients are signed and additive: intersections share one water normal.
+vertex VertexOut waveVertex(uint id [[vertex_id]], constant EffectUniforms &u [[buffer(0)]]) {
+    const float2 quad[6]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,-1),float2(1,1),float2(-1,1)};
+    float2 p=u.placement.xy+quad[id]*u.placement.z;
+    VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1); o.point=p; return o;
+}
+float packetDerivative(float d, float width, float k) {
+    return exp(-d*d/(width*width))*(-k*sin(k*d)-2*d/(width*width)*cos(k*d));
+}
+fragment float4 waveFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]]) {
+    float age=u.style.y, strength=u.style.z;
+    float2 p=in.point-u.placement.xy, gradient=0;
+    float foam=0;
+    if(u.style.x==3) {
+        float travel=length(u.travel.xy);
+        if(travel<0.1) return 0;
+        float2 axis=u.travel.xy/travel, lateral=float2(-axis.y,axis.x);
+        float along=dot(p,axis), across=dot(p,lateral);
+        // A finite strip along the accepted segment, with lateral ripples peeling
+        // away from its sides. There is no radial/end-cap ring.
+        float span=max(18.0,travel), t=-along/span;
+        float taper=smoothstep(-0.18,0.12,t)*(1-smoothstep(0.78,1.18,t));
+        float width=5+age*3;
+        float d=abs(across)-(3+age*19);
+        float fade=exp(-age*1.8)*(1-smoothstep(1.7,2.3,age));
+        float wake=packetDerivative(d,width,0.62)*sign(across)*taper;
+        gradient=lateral*wake*strength*fade*2.2;
+        gradient+=axis*exp(-across*across/45)*sin(t*3.14159)*taper*strength*fade*0.10;
+    } else {
+        bool rain=u.style.x==1;
+        float seed=hash(u.placement.xy), angle=atan2(p.y,p.x), r=length(p);
+        float lifetime=rain?1.4:2.3;
+        float fade=pow(max(0.0,1-age/lifetime),1.4)*smoothstep(0.0,0.035,age);
+        float speed=rain?45:65;
+        float width=rain?6+seed*3:11;
+        float d=r-speed*age*(0.94+seed*0.12);
+        d+=sin(angle*3+seed*6)*0.75+sin(angle*7-seed*9)*0.3;
+        float breakup=0.72+0.18*sin(angle*4+seed*7)+0.10*sin(angle*9+age*3);
+        float derivative=packetDerivative(d,width,rain?1.05:0.65)*breakup;
+        // Initial depression, then sub-0.2 second asymmetric splash glints.
+        derivative+=r*0.15*exp(-r*r/16)*exp(-age*25);
+        gradient=p/max(r,0.01)*derivative*fade*strength*(rain?2.3:0.7);
+        float splash=exp(-pow((r-(2+age*14))/1.1,2.0));
+        foam=splash*pow(max(0.0,sin(angle*5+seed*11)),12.0)*(1-smoothstep(0.04,0.18,age))*strength*0.28;
+    }
+    return float4(gradient,foam,0);
+}
+fragment float4 waterFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]],
+    texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]],
+    texture2d<float> scene [[texture(2)]], texture2d<float> waves [[texture(3)]]) {
+    float2 uv=float2(in.point.x/u.viewport.x,1-in.point.y/u.viewport.y);
+    float distance=mask.sample(linearSampler,imageUV(in.point,u.viewport.xy)).r;
+    float coverage=smoothstep(1.0,18.0,distance);
+    float3 field=waves.sample(linearSampler,uv).rgb*coverage;
+    float2 normal=field.xy;
+    float2 offset=clamp(normal*3.0,float2(-2.8),float2(2.8))/u.viewport.xy;
+    float4 color=scene.sample(linearSampler,uv+float2(offset.x,-offset.y));
+    float light=dot(normal,float2(-0.55,0.83));
+    color.rgb+=light*float3(0.14,0.18,0.16)+field.z*float3(0.55,0.65,0.60);
+    return float4(clamp(color.rgb,0.0,1.0),color.a);
 }

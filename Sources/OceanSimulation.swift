@@ -71,7 +71,7 @@ final class OceanSimulation {
               elapsedTime - lastMotionTime >= 0.12 else { return }
         self.lastMotionPosition = position
         lastMotionTime = elapsedTime
-        addRipple(at: position, strength: 0.34, source: .motion)
+        addRipple(at: position, strength: 0.34, source: .motion, travel: limited(position - lastMotionPosition, to: 140))
         for index in fish.indices {
             let offset = fish[index].position - position
             let distance = simd_length(offset)
@@ -103,6 +103,7 @@ final class OceanSimulation {
             fish[index].length *= ratio
         }
         for index in ripples.indices {
+            ripples[index].travel *= ratio
             ripples[index].position = PondGeometry.point(for: PondGeometry.uv(for: ripples[index].position, size: size), size: next)
         }
         for index in leaves.indices {
@@ -208,9 +209,9 @@ final class OceanSimulation {
         ripples.removeAll { $0.age > ($0.source == .rain ? 1.4 : 2.3) }
     }
 
-    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0) {
+    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0, travel: SIMD2<Float> = .zero) {
         guard PondGeometry.contains(position, size: size) else { return }
-        ripples.append(Ripple(position: position, age: age, strength: strength, source: source))
+        ripples.append(Ripple(position: position, age: age, strength: strength, source: source, travel: travel))
         if ripples.count > 24 { ripples.removeFirst(ripples.count - 24) }
     }
 
@@ -264,7 +265,7 @@ final class OceanSimulation {
                 for ripple in ripples where ripple.age >= 0 {
                     let offset = leaf.position - ripple.position
                     let distance = simd_length(offset)
-                    let radius = ripple.age * 95
+                    let radius = ripple.age * (ripple.source == .rain ? 45 : 65)
                     if distance > 0.001 && abs(distance - radius) < 70 {
                         let falloff = 1 - abs(distance - radius) / 70
                         let amplitude = ripple.strength * falloff * 13

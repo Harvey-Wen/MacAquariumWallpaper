@@ -21,6 +21,7 @@ private struct EffectUniforms {
     var viewport: SIMD4<Float>
     var placement: SIMD4<Float>
     var style: SIMD4<Float>
+    var travel: SIMD4<Float> = .zero
 }
 
 final class OceanRenderer: NSObject, MTKViewDelegate {
@@ -29,6 +30,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private let fishPipeline: MTLRenderPipelineState
     private let effectPipeline: MTLRenderPipelineState
+    private let wavePipeline: MTLRenderPipelineState
+    private let compositePipeline: MTLRenderPipelineState
+    private var targets: (scene: MTLTexture, msaa: MTLTexture, depth: MTLTexture, waves: MTLTexture, output: MTLTexture)?
     private let fishDepth: MTLDepthStencilState
     private let effectDepth: MTLDepthStencilState
     private var meshes: [FishSpecies: (MTLBuffer, Int)] = [:]
@@ -77,6 +81,16 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         }
         fishPipeline = try pipeline("fishVertex", "fishFragment")
         effectPipeline = try pipeline("effectVertex", "effectFragment")
+        compositePipeline = try pipeline("effectVertex", "waterFragment")
+        let waveDescriptor = MTLRenderPipelineDescriptor()
+        waveDescriptor.vertexFunction = library.makeFunction(name: "waveVertex")
+        waveDescriptor.fragmentFunction = library.makeFunction(name: "waveFragment")
+        waveDescriptor.colorAttachments[0].pixelFormat = .rgba16Float
+        let blend = waveDescriptor.colorAttachments[0]!
+        blend.isBlendingEnabled = true
+        blend.sourceRGBBlendFactor = .one; blend.destinationRGBBlendFactor = .one
+        blend.sourceAlphaBlendFactor = .one; blend.destinationAlphaBlendFactor = .one
+        wavePipeline = try device.makeRenderPipelineState(descriptor: waveDescriptor)
         let depth = MTLDepthStencilDescriptor()
         depth.depthCompareFunction = .lessEqual
         depth.isDepthWriteEnabled = true
@@ -128,9 +142,41 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         command.commit()
     }
 
+    // Reuse render targets across display and export frames; only geometry changes allocate.
+    private func prepareTargets(width: Int, height: Int) -> Bool {
+        if let targets, targets.scene.width == width && targets.scene.height == height { return true }
+        func texture(_ format: MTLPixelFormat, _ w: Int, _ h: Int, samples: Int = 1, shared: Bool = false) -> MTLTexture? {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
+            d.usage = [.renderTarget, .shaderRead]
+            d.storageMode = shared ? .shared : .private
+            d.sampleCount = samples
+            d.textureType = samples > 1 ? .type2DMultisample : .type2D
+            return device.makeTexture(descriptor: d)
+        }
+        guard let scene = texture(.bgra8Unorm, width, height),
+              let msaa = texture(.bgra8Unorm, width, height, samples: sampleCount),
+              let depth = texture(.depth32Float, width, height, samples: sampleCount),
+              let waves = texture(.rgba16Float, max(1, width / 2), max(1, height / 2)),
+              let output = texture(.bgra8Unorm, width, height, shared: true) else { return false }
+        targets = (scene, msaa, depth, waves, output)
+        return true
+    }
+
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
-        guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else { encoder.endEncoding(); return }
+        guard let destination = pass.colorAttachments[0].texture,
+              prepareTargets(width: destination.width, height: destination.height), let targets else { return }
+        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else {
+            command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding(); return
+        }
+        let scenePass = MTLRenderPassDescriptor()
+        scenePass.colorAttachments[0].texture = sampleCount > 1 ? targets.msaa : targets.scene
+        scenePass.colorAttachments[0].resolveTexture = sampleCount > 1 ? targets.scene : nil
+        scenePass.colorAttachments[0].loadAction = .clear
+        scenePass.colorAttachments[0].storeAction = sampleCount > 1 ? .multisampleResolve : .store
+        scenePass.depthAttachment.texture = targets.depth
+        scenePass.depthAttachment.loadAction = .clear
+        scenePass.depthAttachment.clearDepth = 1
+        guard var encoder = command.makeRenderCommandEncoder(descriptor: scenePass) else { return }
         func phase(_ frequency: Double) -> Float { Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi)) }
         let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), phase(0.21), phase(0.17))
         encoder.setCullMode(.none)
@@ -161,9 +207,35 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             }
         }
         effect(at: frame.size * 0.5, radius: 1, type: 1, strength: frame.waterStrength)
+        encoder.endEncoding()
+        let wavePass = MTLRenderPassDescriptor()
+        wavePass.colorAttachments[0].texture = targets.waves
+        wavePass.colorAttachments[0].loadAction = .clear
+        wavePass.colorAttachments[0].storeAction = .store
+        guard let waveEncoder = command.makeRenderCommandEncoder(descriptor: wavePass) else { return }
+        waveEncoder.setRenderPipelineState(wavePipeline)
         for ripple in frame.ripples.prefix(24) where ripple.age >= 0 && ripple.age < (ripple.source == .rain ? 1.4 : 2.3) {
-            effect(at: ripple.position, radius: max(8, ripple.age * 95 + 12), type: 2, age: ripple.age, strength: ripple.strength, seed: ripple.source == .rain ? 1 : 0)
+            let radius = ripple.source == .motion ? simd_length(ripple.travel) + 70 : ripple.age * (ripple.source == .rain ? 45 : 65) + 28
+            var u = EffectUniforms(viewport: viewport, placement: SIMD4(ripple.position.x, ripple.position.y, radius, 0),
+                style: SIMD4(Float(ripple.source.rawValue), ripple.age, ripple.strength, 0),
+                travel: SIMD4(ripple.travel.x, ripple.travel.y, 0, 0))
+            waveEncoder.setVertexBytes(&u, length: MemoryLayout<EffectUniforms>.stride, index: 0)
+            waveEncoder.setFragmentBytes(&u, length: MemoryLayout<EffectUniforms>.stride, index: 0)
+            waveEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
+        waveEncoder.endEncoding()
+        guard let finalEncoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder = finalEncoder
+        encoder.setFragmentTexture(environment, index: 0)
+        encoder.setFragmentTexture(waterDistance, index: 1)
+        encoder.setFragmentTexture(targets.scene, index: 2)
+        encoder.setFragmentTexture(targets.waves, index: 3)
+        encoder.setRenderPipelineState(compositePipeline)
+        encoder.setDepthStencilState(effectDepth)
+        var composite = EffectUniforms(viewport: viewport, placement: .zero, style: SIMD4(5, 0, 1, 0))
+        encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         for leaf in frame.leaves {
             let progress = min(1, max(0, leaf.age / max(leaf.fallDuration, 0.001)))
             let eased = progress * progress * (3 - 2 * progress)
@@ -173,7 +245,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         if frame.weatherAmount > 0 {
             // Reduce Double time before Float conversion; frozen frames also freeze rain.
             effect(at: frame.size * 0.5, radius: 1, type: 4,
-                   age: Float(frame.time.truncatingRemainder(dividingBy: 2)), strength: frame.weatherAmount)
+                   age: Float(frame.time.truncatingRemainder(dividingBy: 8)), strength: frame.weatherAmount)
         }
         encoder.endEncoding()
     }
@@ -181,19 +253,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     /// Deterministic offscreen render; rows run top-to-bottom, bytes are premultiplied RGBA8.
     func renderRGBA(frame: OceanFrame, width: Int, height: Int) throws -> [UInt8] {
         guard width > 0, height > 0 else { throw OceanRenderError.unavailable("导出尺寸必须大于零。") }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = .shared
-        guard let output = device.makeTexture(descriptor: descriptor), let command = queue.makeCommandBuffer() else {
+        guard prepareTargets(width: width, height: height), let targets, let command = queue.makeCommandBuffer() else {
             throw OceanRenderError.unavailable("无法创建离屏画布。")
         }
-        descriptor.storageMode = .private
-        descriptor.textureType = sampleCount > 1 ? .type2DMultisample : .type2D
-        descriptor.sampleCount = sampleCount
-        guard let multisample = device.makeTexture(descriptor: descriptor) else { throw OceanRenderError.unavailable("无法创建抗锯齿画布。") }
-        descriptor.pixelFormat = .depth32Float
-        descriptor.usage = .renderTarget
-        guard let depth = device.makeTexture(descriptor: descriptor) else { throw OceanRenderError.unavailable("无法创建离屏深度缓冲。") }
+        let output = targets.output, multisample = targets.msaa, depth = targets.depth
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = sampleCount > 1 ? multisample : output
         pass.colorAttachments[0].resolveTexture = sampleCount > 1 ? output : nil
