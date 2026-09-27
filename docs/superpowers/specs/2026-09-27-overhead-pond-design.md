@@ -2,7 +2,7 @@
 
 日期：2026-09-27。
 
-状态：用户已整体确认需求，并要求先生成效果图。当前进入视觉预览阶段，尚未开始程序实现。
+状态：用户已确认完整需求及写实效果图。当前在独立工作区实现并验证动态壁纸。
 
 ## 目标与已确认需求
 
@@ -65,3 +65,16 @@
 ## 文档自查
 
 已将用户明确选择与建议默认值分开；全屏的桌面含义、首版屏幕范围、点击语义和三类扰动的差异均有明确描述。已有项目的能力只作为复用基础，不代表新池塘效果已经实现或验证。
+
+## 用户追加：顶部菜单栏背景
+
+用户要求顶部 macOS 状态栏也有同一池塘的壁纸效果。已有窗口覆盖 NSScreen.frame，但本机 macOS 15.7.4 系统桌面仍指向旧 Catalina.heic。为使菜单栏背景与场景衔接，启用池塘时将当前主屏系统桌面背景同步为池塘的静态帧；天气或主屏尺寸改变时同步更新。持续动画仍由桌面窗口绘制，菜单栏文字、图标、窗口层级和输入行为保持系统原样。
+
+这是用户追加要求对原“系统壁纸地址始终不变”约束的替代：应用先可靠保存原壁纸图片地址和显示选项，关闭或退出时恢复；若用户在应用运行期间主动改成其他壁纸，则不覆盖用户的新选择。保存恢复记录以处理异常退出后的下一次启动。菜单栏的系统模糊和透明效果仍由 macOS 控制，不修改全局辅助功能或菜单栏偏好。
+
+官方接口依据：[NSWorkspace.setDesktopImageURL](https://developer.apple.com/documentation/appkit/nsworkspace/setdesktopimageurl(_:for:options:))、[desktopImageURL](https://developer.apple.com/documentation/appkit/nsworkspace/desktopimageurl(for:))。
+# Visual revision: verdant rainy park
+
+The user's latest direction replaces the original olive photographic palette with the lush green rainy park atmosphere of The Garden of Words: emerald canopy, jade/teal water, damp mossy gray stone, diffuse cool light and detailed painted naturalism. Preserve the approved top-down composition, shared shoreline and interactions. Add fine diagonal animated rain over the scene and keep circular water impacts restricted to water; leaves use early-summer green/yellow-green. This explicit revision supersedes conflicting original palette language below.
+
+The Douyin reference https://www.douyin.com/video/7690052489864891674 was inspected through the existing in-app browser. Observed frames show small koi over a softly illustrated teal pond bed, subtle diagonal rain and sparse drifting material. It informs quiet motion and rainfall; no clock, Windows taskbar or reference controls are requested.

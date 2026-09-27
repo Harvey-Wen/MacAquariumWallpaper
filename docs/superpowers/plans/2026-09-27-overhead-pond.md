@@ -111,4 +111,28 @@ check(controller.simulation.time == pausedTime, "pause freezes weather, leaves a
 
 - [ ] Independent whole-branch review; fix actionable defects and rerun affected checks.
 - [ ] Fast-forward the original clean project to the finished branch, build and start the new app after stopping only the old wallpaper process. Inspect actual running wallpaper and weather controls; record runtime stats and remaining manual coverage.
-- [ ] Return concise delivery summary, actual rendered preview and application path. Leave system wallpaper settings unchanged.
+- [ ] Return concise delivery summary, actual rendered preview and application path. While enabled, use the reversible pond system backdrop required by Task 4; restore the original image on disable/quit.
+
+### Task 4: Match the menu-bar backdrop (user addition)
+
+**Files:** Create `Sources/DesktopBackdrop.swift`; modify `Sources/DesktopController.swift`, `Sources/App.swift` only if status reporting needs it, `Tests/DesktopTests.swift`, `scripts/test-desktop.sh`, `README.md`, `docs/verification.md`.
+
+**Interfaces:** Main-actor `DesktopBackdrop` owns temporary NSWorkspace desktop-image changes on the current main screen, with apply/restore methods invoked by DesktopController. Use an application-support record (original URL and display options, target display ID and owned applied URL) and generated PNG frames in a dedicated app-owned directory. Preserve original image/options BEFORE setting any backdrop. Current view renderer.writePNG can capture a static pond frame at display backing resolution; render using target weatherAmount (0/1) for switching weather without waiting for transition. Use unique file URL per replacement so wallpaper caches refresh. Keep image aspect matched to screen. Never capture user screen pixels.
+
+- [ ] Apply on enable/start, update on weather or display geometry changes, restore on disable/stop. Pause retains backdrop, sleep/lock hide animation without restoring backdrop. Avoid per-frame disk writes or desktop-image changes.
+- [ ] Restore only when the screen currently uses this app's owned backdrop; preserve any newer user-selected wallpaper. Persist restoration record for restart after crash; clear records/old generated files only after successful replacement or restoration. Restore and keep prior screen record when changing main screen as possible; don't modify other monitors.
+- [ ] Handle apply/restore errors visibly in diagnostics/menu status; do not lose recovery records or overwrite original wallpaper if backup persistence fails. Prefer small focused helper, no global preference changes/private APIs.
+- [ ] Native tests check runtime scene URL is installed, weather replaces backing image URL, pause does not churn it, disable/stop restores original URL/options, and application/test lifecycle does not leave a background behind. Add focused fake-provider tests only if needed for failure/recovery/user-override state transitions; don't add generic frameworks.
+- [ ] Update docs: earlier no-system-wallpaper-change statement is superseded by the user's menu-bar requirement; describe reversible temporary background and any unverified dynamic-HEIC/Spaces behavior accurately. Run build, desktop/input checks and signature validation; commit independently.
+
+### Task 5: Verdant rainy park art direction (user revision)
+
+**Files:** `Resources/PondEnvironment.png` supplied by parent; modify `Resources/Ocean.metal`, `Sources/OceanRenderer.swift`, `Tests/RenderTests.swift`; documentation in `docs/concepts/README.md` and `docs/verification.md`.
+
+**Intent:** The user explicitly replaces the muted original palette with the rich green rainy park atmosphere of The Garden of Words. Retain the approved straight-down irregular pond and interactions. The supplied Douyin reference was inspected in the in-app browser: teal water, subtle koi, fine diagonal rain, light interaction; use these motion qualities without copying its layout or adding clocks/controls.
+
+- [ ] Integrate the parent's imagegen-restyled environment while preserving the shared shoreline; lush emerald/jade foliage, cool wet mossy stone, clear green water, detailed painted naturalism. No baked fish, rain, ripples or floating leaves.
+- [ ] Add restrained animated fine diagonal rain streaks in rainy weather. Rain falls over the whole scene (including foliage), whereas impact rings remain clipped to water. Dry mode has no streaks. Use existing frame time with stable periodic phase and no per-frame allocations or new dependencies. Preserve smooth day-seven motion and pause semantics.
+- [ ] Harmonize water glints and leaves with the green early-summer palette; leaves should be predominantly fresh green with restrained yellow-green variation. Avoid darkening the scene into muddy black. Keep fish readable and modestly sized, no new UI or features.
+- [ ] Extend existing meaningful renderer checks for rain-only motion, no dry streaks, and long-running continuity. Preserve ring-on-land exclusion and layer checks. Export sunny/rainy stills and real rendered GIF, visually inspect and measure rainy GPU performance at 3024×1964.
+- [ ] Commit code/tests as a verified module and record exact evidence. Parent handles generated asset and provenance documentation, final build/live verification and default weather demonstration.
