@@ -10,7 +10,7 @@ final class OceanSimulation {
     var weather: PondWeather = .sunny
 
     private var elapsedTime: Double = 0
-    private var nextRainTime = 8.0 / 60
+    private var nextRainTime = 1.0 / 40
     private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
@@ -128,8 +128,8 @@ final class OceanSimulation {
 
         ageRipples(step: step)
         while elapsedTime + 0.000_001 >= nextRainTime {
-            if weather == .rainy { spawnRain() }
-            nextRainTime += 8.0 / 60
+            if weather == .rainy { spawnRain(age: Float(max(0, elapsedTime - nextRainTime))) }
+            nextRainTime += 1.0 / 40
         }
         while elapsedTime + 0.000_001 >= nextLeafTime {
             spawnLeaf()
@@ -206,18 +206,24 @@ final class OceanSimulation {
 
     private func ageRipples(step: Float) {
         for index in ripples.indices { ripples[index].age += step }
-        ripples.removeAll { $0.age > ($0.source == .rain ? 1.4 : 2.3) }
+        ripples.removeAll { $0.source == .rain ? $0.age >= 1.4 - 0.00001 : $0.age > 2.3 }
     }
 
     private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0, travel: SIMD2<Float> = .zero) {
         guard PondGeometry.contains(position, size: size) else { return }
         ripples.append(Ripple(position: position, age: age, strength: strength, source: source, travel: travel))
-        if ripples.count > 24 { ripples.removeFirst(ripples.count - 24) }
+        // Rain owns a separate bounded budget so dense rainfall cannot evict interaction.
+        let rain = source == .rain
+        let limit = rain ? 72 : 24
+        if ripples.filter({ ($0.source == .rain) == rain }).count > limit,
+           let oldest = ripples.firstIndex(where: { ($0.source == .rain) == rain }) {
+            ripples.remove(at: oldest)
+        }
     }
 
-    private func spawnRain() {
+    private func spawnRain(age: Float) {
         guard let point = randomWaterPoint(margin: 8) else { return }
-        addRipple(at: point, strength: 0.19, source: .rain)
+        addRipple(at: point, strength: 0.24, source: .rain, age: age)
         for index in fish.indices {
             let offset = fish[index].position - point
             let distance = simd_length(offset)
@@ -248,6 +254,30 @@ final class OceanSimulation {
         if leaves.count > 12 { leaves.removeFirst(leaves.count - 12) }
     }
 
+    // Same travel strip, taper and lateral wave packet as the optical motion field.
+    static func motionWaveForce(at point: SIMD2<Float>, ripple: Ripple) -> SIMD2<Float> {
+        let length = simd_length(ripple.travel)
+        guard length > 0.1, ripple.age >= 0, ripple.age < 2.3 else { return .zero }
+        let axis = ripple.travel / length, lateral = SIMD2(-axis.y, axis.x)
+        let offset = point - ripple.position
+        let t = -simd_dot(offset, axis) / max(18, length)
+        func smooth(_ low: Float, _ high: Float, _ value: Float) -> Float {
+            let x = min(1, max(0, (value - low) / (high - low)))
+            return x * x * (3 - 2 * x)
+        }
+        let taper = smooth(-0.18, 0.12, t) * (1 - smooth(0.78, 1.18, t))
+        guard taper > 0 else { return .zero }
+        let across = simd_dot(offset, lateral)
+        let width = 5 + ripple.age * 3
+        let d = abs(across) - (3 + ripple.age * 19)
+        let derivative = exp(-d*d/(width*width)) * (-0.62*sin(0.62*d) - 2*d/(width*width)*cos(0.62*d))
+        let side: Float = across > 0 ? 1 : (across < 0 ? -1 : 0)
+        let fade = exp(-ripple.age * 1.8) * (1 - smooth(1.7, 2.3, ripple.age))
+        let lateralSlope = derivative * side * taper * ripple.strength * fade * 2.2
+        let forwardSlope = exp(-across*across/45) * sin(t * .pi) * taper * ripple.strength * fade * 0.10
+        return (lateral * lateralSlope + axis * forwardSlope) * 13
+    }
+
     private func updateLeaves(step: Float) {
         for index in leaves.indices {
             var leaf = leaves[index]
@@ -263,6 +293,10 @@ final class OceanSimulation {
             } else if leaf.stage == .floating {
                 var wave = SIMD2<Float>.zero
                 for ripple in ripples where ripple.age >= 0 {
+                    if ripple.source == .motion {
+                        wave += Self.motionWaveForce(at: leaf.position, ripple: ripple)
+                        continue
+                    }
                     let offset = leaf.position - ripple.position
                     let distance = simd_length(offset)
                     let radius = ripple.age * (ripple.source == .rain ? 45 : 65)

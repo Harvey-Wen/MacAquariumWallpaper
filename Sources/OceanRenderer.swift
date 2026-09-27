@@ -214,7 +214,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         wavePass.colorAttachments[0].storeAction = .store
         guard let waveEncoder = command.makeRenderCommandEncoder(descriptor: wavePass) else { return }
         waveEncoder.setRenderPipelineState(wavePipeline)
-        for ripple in frame.ripples.prefix(24) where ripple.age >= 0 && ripple.age < (ripple.source == .rain ? 1.4 : 2.3) {
+        for ripple in frame.ripples.prefix(96) where ripple.age >= 0 && ripple.age < (ripple.source == .rain ? 1.4 : 2.3) {
             let radius = ripple.source == .motion ? simd_length(ripple.travel) + 70 : ripple.age * (ripple.source == .rain ? 45 : 65) + 28
             var u = EffectUniforms(viewport: viewport, placement: SIMD4(ripple.position.x, ripple.position.y, radius, 0),
                 style: SIMD4(Float(ripple.source.rawValue), ripple.age, ripple.strength, 0),

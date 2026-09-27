@@ -78,12 +78,12 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
         // reduced in Double on the CPU; each local reset disappears through a fade.
         float alpha=0;
         for(int layer=0;layer<3;layer++) {
-            float spacing=78+layer*58;
+            float spacing=40+layer*36;
             float2 grid=in.point/spacing;
             float2 cell=floor(grid), local=fract(grid)*spacing;
             float seed=hash(cell+float2(layer*71,layer*113));
             float other=hash(cell+float2(41+layer*17,93));
-            float cycles=3+floor(other*4);
+            float cycles=10+floor(other*12)+layer*6;
             float t=fract(u.style.y*cycles/8+seed);
             float fade=smoothstep(0.0,0.13,t)*(1-smoothstep(0.78,1.0,t));
             float wind=0.12+0.12*sin(u.style.y*0.785398);
@@ -93,10 +93,10 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
             float2 d=local-center;
             float across=dot(d,float2(-direction.y,direction.x));
             float along=dot(d,direction);
-            float width=0.40+layer*0.27;
-            float length=0.8+layer*1.1+seed*seed*(1+layer);
+            float width=0.48+layer*0.30;
+            float length=1.5+layer*1.8+seed*seed*(2+layer*2);
             float drop=exp(-across*across/(width*width)-along*along/(length*length));
-            alpha+=drop*fade*(0.09+layer*0.035+other*0.08);
+            alpha+=drop*fade*(0.24+layer*0.07+other*0.16);
         }
         alpha*=u.style.z;
         return float4(float3(0.70,0.84,0.78)*alpha,alpha);

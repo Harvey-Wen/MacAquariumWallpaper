@@ -274,6 +274,23 @@ import ImageIO
         print("PASS opacity, empty, mesh, fish difference, \(landChecked) unchanged land samples, weather, surface leaf ordering, seven-day continuity and 3 aspect ratios.")
         print("GPU \(view.device!.name) 3024x1964 rainy: median \(timings[15]) ms; p95 \(timings[28]) ms; max \(timings.last!) ms (30 measured frames).")
         precondition(timings[28]<1000/30)
+        // Fully occupied independent budgets: rain must not evict interaction,
+        // and the completed GPU frame must remain within the same native budget.
+        var storm = benchmark
+        storm.ripples = (0..<96).map { i in
+            Ripple(position: SIMD2(350+Float(i%12)*70,250+Float(i/12)*60),
+                   age: 0.15+Float(i%12)*0.09,strength: i<72 ? 0.24 : (i%2 == 0 ? 1 : 0.34),
+                   source: i<72 ? .rain : (i%2 == 0 ? .click : .motion),travel: i%2 == 0 ? .zero : SIMD2(60,20))
+        }
+        var stormTimings: [Double] = []
+        for i in 0..<35 {
+            storm.time += 1.0/30
+            _ = try renderer.renderRGBA(frame: storm,width: 3024,height: 1964)
+            if i>=5 { stormTimings.append(renderer.lastGPUSeconds*1000) }
+        }
+        stormTimings.sort()
+        print("GPU 96 disturbances (72 rain + 24 click/motion), 1512x982 points / 3024x1964 pixels: median \(stormTimings[15]) ms; p95 \(stormTimings[28]) ms; max \(stormTimings.last!) ms.")
+        precondition(stormTimings[28]<1000/30)
         if CommandLine.arguments.contains("--preview") {
             for motion in [false,true] {
                 let name = motion ? "pond-cursor-preview" : "pond-preview"

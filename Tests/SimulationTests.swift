@@ -11,6 +11,7 @@ private enum SimulationTests {
     static func main() throws {
         try populationAndShoreline()
         try waterClicksAndFalloff()
+        try directionalLeafForceAndRainBudget()
         try directionalTravelResizes()
         try pointerMovementIsQuietAndBounded()
         try pointerReentryAndJumpDoNotBridge()
@@ -26,7 +27,7 @@ private enum SimulationTests {
         try frameRateEquivalence()
         try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 17 passed")
+        print("SimulationTests: 18 passed")
     }
 
     private static func populationAndShoreline() throws {
@@ -68,6 +69,26 @@ private enum SimulationTests {
         for _ in 0..<180 { sim.update(deltaTime: 1 / 30) }
         try expect(sim.fish.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && simd_length($0.velocity) < 240 }, "click storm remains finite and bounded")
         try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
+    }
+
+    private static func directionalLeafForceAndRainBudget() throws {
+        let ripple = Ripple(position: SIMD2(800,500),age: 0.3,strength: 0.34,source: .motion,travel: SIMD2(60,0))
+        let behind = OceanSimulation.motionWaveForce(at: SIMD2(770,510), ripple: ripple)
+        let ahead = OceanSimulation.motionWaveForce(at: SIMD2(850,510), ripple: ripple)
+        let pastTail = OceanSimulation.motionWaveForce(at: SIMD2(700,510), ripple: ripple)
+        let farSide = OceanSimulation.motionWaveForce(at: SIMD2(770,600), ripple: ripple)
+        try expect(abs(behind.y)>0.1 && abs(behind.y)>abs(behind.x)*5, "leaf force follows lateral wake slopes behind the segment")
+        try expect(ahead == .zero && pastTail == .zero && simd_length(farSide)<0.0001, "no radial push ahead, beyond the tail or outside the wave packet")
+        let rotated = Ripple(position: SIMD2(800,500),age: ripple.age,strength: ripple.strength,source: .motion,travel: SIMD2(0,60))
+        let rotatedForce = OceanSimulation.motionWaveForce(at: SIMD2(790,470), ripple: rotated)
+        try expect(simd_distance(rotatedForce,SIMD2(-behind.y,behind.x))<0.0001, "leaf force rotates with the same travel axis as visible waves")
+        let sim = OceanSimulation(size: SIMD2(1600,1000),seed: 7)
+        sim.weather = .rainy
+        sim.click(at: SIMD2(800,500))
+        for _ in 0..<60 { sim.update(deltaTime: 1/30) }
+        try expect(sim.ripples.filter { $0.source == .rain }.count >= 50, "steady rain sustains roughly forty impacts per second")
+        try expect(sim.ripples.filter { $0.source == .click }.count == 2, "dense rain must not evict active click waves")
+        try expect(sim.ripples.count <= 96, "rain and interaction retain finite independent budgets")
     }
 
     private static func directionalTravelResizes() throws {
@@ -176,7 +197,7 @@ private enum SimulationTests {
             dry.update(deltaTime: 1 / 30)
         }
         try expect(rainy.ripples.contains { $0.source == .rain }, "rain produces water impacts")
-        try expect(rainy.ripples.count <= 24, "rain ripples are capped")
+        try expect(rainy.ripples.count <= 96, "rain ripples are capped")
         try expect(rainy.ripples.allSatisfy { PondGeometry.contains($0.position, size: rainy.size) && ($0.source != .rain || $0.strength < 1) }, "rain is water-only and weaker than clicks")
         try expect(rainy.fish.allSatisfy { $0.panic < 0.5 }, "rain cannot cause click-sized panic")
         try expect(zip(rainy.fish, dry.fish).contains { simd_distance($0.position, $1.position) > 0.1 }, "rain must actually affect nearby fish")
@@ -280,7 +301,7 @@ private enum SimulationTests {
                     if ripple.position.y > 900 { rainNearEdges.insert(3) }
                 }
             }
-            try expect(sim.leaves.count <= 12 && sim.ripples.count <= 24, "steady-state effects remain bounded")
+            try expect(sim.leaves.count <= 12 && sim.ripples.count <= 96, "steady-state effects remain bounded")
         }
         try expect(origins.count == 4 && landings.count == 4, "all four branch paths spawn and land")
         try expect(rainNearEdges.count == 4, "rain reaches open water along every edge")
