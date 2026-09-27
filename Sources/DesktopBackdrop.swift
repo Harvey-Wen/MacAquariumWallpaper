@@ -100,6 +100,11 @@ import AppKit
         guard let current = readImage(screen) else { throw failure("无法备份当前桌面背景") }
         var record: Record
         if let existing = records.first(where: { $0.display == identifier }) {
+            // A timed-out system request can still complete. Do not discard its
+            // ownership or enqueue another replacement before explicit restoration.
+            guard existing.pending != true else {
+                throw failure("上次背景更改尚待恢复，请先关闭再开启池塘")
+            }
             guard existing.images.contains(current) else {
                 overridden.insert(identifier)
                 try restore(existing, on: screen) // Releases ownership without changing the user's image.
@@ -124,6 +129,7 @@ import AppKit
         do { try render(next) }
         catch { try? FileManager.default.removeItem(at: next); throw error }
         guard readImage(screen) == current else {
+            overridden.insert(identifier)
             try FileManager.default.removeItem(at: next)
             throw failure("生成期间桌面背景已改变，保留你的选择")
         }

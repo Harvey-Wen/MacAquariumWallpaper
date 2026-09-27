@@ -164,12 +164,54 @@ import MetalKit
         catch { check(queued != nil, "timed out system request remains journaled") }
         try delayed.restoreAll()
         check(queued == nil, "immediate disable reasserts original after unacknowledged apply")
+        let renderRace = try helper()
+        let setsBeforeRace = sets
+        do {
+            try renderRace.apply(screen: screen, key: "first", render: { url in
+                try render(url); current = userChoice
+            })
+            check(false, "first-render user change must surface")
+        } catch { check(current == userChoice, "first-render user choice is preserved") }
+        var renderedAgain = false
+        try renderRace.apply(screen: screen, key: "next-weather", render: { url in renderedAgain = true; try render(url) })
+        check(!renderedAgain && sets == setsBeforeRace && current == userChoice, "first-render override suppresses subsequent weather replacement")
+        try renderRace.restoreAll()
+        try renderRace.apply(screen: screen, key: "explicit-enable", render: render)
+        check(current != userChoice, "explicit disable and enable resets first-render override")
+        try renderRace.restoreAll()
+        check(current == userChoice, "explicit re-enable backs up the user-selected image")
+        current = original; options = originalOptions
+
+        var pendingImage: URL?
+        var delayReplacement = false
+        let lateReplacement = try DesktopBackdrop(directory: directory, readImage: { _ in current }, readOptions: { _ in originalOptions }, setImage: { url, _, _ in
+            if delayReplacement { pendingImage = url } else { current = url }
+        })
+        try lateReplacement.apply(screen: screen, key: "A", render: render)
+        let imageA = current
+        delayReplacement = true
+        do { try lateReplacement.apply(screen: screen, key: "B", render: render); check(false, "replacement timeout must surface") }
+        catch { check(pendingImage != nil, "late replacement is outstanding") }
+        var renderedC = false
+        do {
+            try lateReplacement.apply(screen: screen, key: "C", render: { url in
+                renderedC = true; current = pendingImage!; try render(url)
+            })
+            check(false, "retry must be refused while replacement is outstanding")
+        } catch { check(!renderedC, "pending replacement prevents another render and request") }
+        check(FileManager.default.fileExists(atPath: imageA.path) && FileManager.default.fileExists(atPath: pendingImage!.path), "retry retains both current and outstanding images")
+        current = pendingImage! // The original timed-out request finally completes.
+        delayReplacement = false
+        try lateReplacement.restoreAll()
+        check(current == original, "late completion remains owned and restores original wallpaper")
+        check(!FileManager.default.fileExists(atPath: imageA.path) && !FileManager.default.fileExists(atPath: pendingImage!.path), "late completion files clean only after restoration")
+        let previousSetsAfterRaces = sets
         let unwritable = try helper()
         let journal = directory.appendingPathComponent("ownership.json")
         try FileManager.default.removeItem(at: journal)
         try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: false)
         do { try unwritable.apply(screen: screen, key: "sunny", render: render); check(false, "failed journal must be rejected") }
-        catch { check(sets == previousSets && current == original, "failed durable backup never replaces user wallpaper") }
+        catch { check(sets == previousSetsAfterRaces && current == original, "failed durable backup never replaces user wallpaper") }
 
     }
 }
