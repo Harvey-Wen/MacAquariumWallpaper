@@ -7,16 +7,16 @@ import AppKit
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "fish", accessibilityDescription: "透明海洋")
-        item.button?.toolTip = "透明海洋 · 鱼群与水波"
-        item.button?.setAccessibilityLabel("透明海洋")
+        item.button?.image = NSImage(systemSymbolName: "fish", accessibilityDescription: "池塘")
+        item.button?.toolTip = "池塘 · 锦鲤与水波"
+        item.button?.setAccessibilityLabel("池塘")
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
         statusItem = item
         do {
             guard let shaderURL = Bundle.main.url(forResource: "Ocean", withExtension: "metal") else {
-                throw NSError(domain: "Ocean", code: 2, userInfo: [NSLocalizedDescriptionKey: "缺少海洋渲染资源，请重新构建应用"])
+                throw NSError(domain: "Ocean", code: 2, userInfo: [NSLocalizedDescriptionKey: "缺少池塘渲染资源，请重新构建应用"])
             }
             let controller = try DesktopController(shaderURL: shaderURL)
             let args = CommandLine.arguments
@@ -27,7 +27,7 @@ import AppKit
             controller.start()
         } catch {
             launchError = "无法启动：\(error.localizedDescription)"
-            NSLog("透明海洋：%@", error.localizedDescription)
+            NSLog("池塘：%@", error.localizedDescription)
         }
         rebuildMenu(menu)
     }
@@ -41,20 +41,20 @@ import AppKit
         menu.addItem(title)
         menu.addItem(.separator())
         if let desktop {
-            add(menu, "显示海洋", #selector(toggleEnabled), checked: desktop.enabled)
+            add(menu, "显示池塘", #selector(toggleEnabled), checked: desktop.enabled)
             add(menu, desktop.paused ? "继续游动" : "暂停游动", #selector(togglePaused))
             add(menu, "鼠标互动", #selector(toggleInteraction), checked: desktop.interactive)
-            let water = NSMenuItem(title: "水纹强度", action: nil, keyEquivalent: "")
+            let weather = NSMenuItem(title: "天气", action: nil, keyEquivalent: "")
             let choices = NSMenu()
-            for (title, value) in [("轻柔", Float(0.25)), ("标准", Float(0.45)), ("明显", Float(0.75))] {
-                let option = NSMenuItem(title: title, action: #selector(setWater(_:)), keyEquivalent: "")
-                option.target = self; option.representedObject = NSNumber(value: value)
-                option.state = abs(desktop.waterStrength - value) < 0.01 ? .on : .off
+            for (title, value) in [("晴天", PondWeather.sunny), ("雨天", PondWeather.rainy)] {
+                let option = NSMenuItem(title: title, action: #selector(setWeather(_:)), keyEquivalent: "")
+                option.target = self; option.representedObject = value.rawValue
+                option.state = desktop.weather == value ? .on : .off
                 choices.addItem(option)
             }
-            water.submenu = choices; menu.addItem(water)
+            weather.submenu = choices; menu.addItem(weather)
             menu.addItem(.separator())
-            let hint = NSMenuItem(title: "点击惊散鱼群 · 拖动拨动水流", action: nil, keyEquivalent: "")
+            let hint = NSMenuItem(title: "点击池水产生涟漪 · 附近锦鲤暂时散开", action: nil, keyEquivalent: "")
             hint.isEnabled = false; menu.addItem(hint)
             if desktop.interactive {
                 let unavailable = NSMenuItem(title: desktop.input.status, action: nil, keyEquivalent: "")
@@ -62,7 +62,7 @@ import AppKit
             }
             menu.addItem(.separator())
         }
-        add(menu, "退出透明海洋", #selector(quit), key: "q")
+        add(menu, "退出池塘", #selector(quit), key: "q")
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ action: Selector, checked: Bool = false, key: String = "") {
@@ -73,8 +73,9 @@ import AppKit
     @objc private func toggleEnabled() { desktop?.enabled.toggle() }
     @objc private func togglePaused() { desktop?.paused.toggle() }
     @objc private func toggleInteraction() { desktop?.interactive.toggle() }
-    @objc private func setWater(_ sender: NSMenuItem) {
-        if let value = sender.representedObject as? NSNumber { desktop?.waterStrength = value.floatValue }
+    @objc private func setWeather(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? String,
+           let weather = PondWeather(rawValue: value) { desktop?.weather = weather }
     }
     @objc private func quit() { NSApp.terminate(nil) }
     func applicationWillTerminate(_ notification: Notification) { desktop?.stop() }

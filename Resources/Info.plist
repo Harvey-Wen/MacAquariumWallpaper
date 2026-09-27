@@ -4,7 +4,7 @@
 <key>CFBundleExecutable</key><string>MacAquariumWallpaper</string>
 <key>CFBundleIdentifier</key><string>local.macaquariumwallpaper.app</string>
 <key>CFBundleName</key><string>MacAquariumWallpaper</string>
-<key>CFBundleDisplayName</key><string>透明海洋</string>
+<key>CFBundleDisplayName</key><string>池塘</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>

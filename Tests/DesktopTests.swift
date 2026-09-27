@@ -17,15 +17,33 @@ import MetalKit
         controller.start(); advance()
         check(controller.window.isVisible, "overlay visible")
         check(controller.window.ignoresMouseEvents, "overlay passes input through")
-        check(!controller.window.isOpaque && !controller.view.isOpaque && controller.view.layer?.isOpaque == false, "all native alpha layers transparent")
+        check(!controller.window.isOpaque && !controller.view.isOpaque && controller.view.layer?.isOpaque == true,
+              "pass-through window with opaque pond backing layer")
         check(!controller.window.canBecomeKey && !controller.window.canBecomeMain, "overlay cannot steal focus")
         check(controller.window.level.rawValue > CGWindowLevelForKey(.desktopWindow)
               && controller.window.level.rawValue < CGWindowLevelForKey(.desktopIconWindow), "between wallpaper and icons")
         check(controller.window.frame == screens[0].frame, "full main screen")
-        check(controller.simulation.fish.count == 29, "all fish present")
+        check(controller.simulation.fish.count == 30, "all koi present")
+        check(controller.weather == .sunny && controller.status.contains("30 条锦鲤") && controller.status.contains("晴天"), "live koi and sunny status")
+        controller.weather = .rainy; advance(1.1)
+        check(controller.simulation.weather == .rainy && controller.status.contains("雨天"), "rainy control reaches simulation and status")
+        if !controller.reducedMotion {
+            check(controller.simulation.frame(waterStrength: 0.45).weatherAmount > 0, "rain transitions during animation")
+        }
         let frameCount = controller.frameCount
+        let pausedTime = controller.simulation.time
+        let pausedFish = controller.simulation.fish.map(\.position)
+        let pausedLeaves = controller.simulation.leaves.map(\.position)
+        if !controller.reducedMotion { check(!pausedLeaves.isEmpty, "falling leaf reached desktop scene") }
+        let pausedWeatherAmount = controller.simulation.frame(waterStrength: 0.45).weatherAmount
         controller.paused = true; advance()
         check(controller.frameCount == frameCount && controller.window.isVisible, "pause keeps still image")
+        check(controller.simulation.time == pausedTime && controller.simulation.fish.map(\.position) == pausedFish
+              && controller.simulation.leaves.map(\.position) == pausedLeaves, "pause freezes fish and leaves")
+        controller.weather = .sunny; advance()
+        check(controller.simulation.weather == .sunny && controller.status.contains("晴天"), "weather selection works while paused")
+        check(controller.simulation.time == pausedTime
+              && controller.simulation.frame(waterStrength: 0.45).weatherAmount == pausedWeatherAmount, "pause freezes rain transition")
         check(!controller.input.enabled, "pause stops input")
         controller.enabled = false
         check(!controller.window.isVisible, "disable hides overlay")
@@ -33,6 +51,9 @@ import MetalKit
         check(controller.window.isVisible && controller.paused, "re-enable retains pause")
         controller.paused = false; advance()
         if !controller.reducedMotion { check(controller.frameCount > frameCount, "resume renders") }
+        if !controller.reducedMotion {
+            check(controller.simulation.frame(waterStrength: 0.45).weatherAmount < pausedWeatherAmount, "sunny transition resumes")
+        }
         controller.interactive = false
         check(!controller.input.enabled, "interaction switch")
         controller.interactive = true

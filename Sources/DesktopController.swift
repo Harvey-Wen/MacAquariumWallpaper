@@ -20,7 +20,14 @@ final class TransparentMetalView: MTKView {
     var enabled = true { didSet { updateActivity() } }
     var paused = false { didSet { updateActivity() } }
     var interactive = true { didSet { updateActivity() } }
-    var waterStrength: Float = 0.45 { didSet { render() } }
+    var weather: PondWeather {
+        get { simulation.weather }
+        set {
+            simulation.weather = newValue
+            if enabled && !sleeping && !locked { render() }
+            writeDiagnostics()
+        }
+    }
     var diagnosticURL: URL?
     private(set) var sleeping = false
     private var locked = false
@@ -35,12 +42,13 @@ final class TransparentMetalView: MTKView {
     var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     var animating: Bool { enabled && !paused && !sleeping && !locked && !reducedMotion }
     var status: String {
-        if !enabled { return "海洋已关闭" }
-        if locked { return "屏幕已锁定 · 已停止绘制" }
-        if sleeping { return "屏幕休眠 · 已停止绘制" }
-        if reducedMotion { return "减少动态效果 · 静止显示" }
-        if paused { return "已暂停 · 保留当前画面" }
-        return "29 只海洋生物 · 主屏 30 FPS"
+        let scene = "\(simulation.fish.count) 条锦鲤 · \(weather == .rainy ? "雨天" : "晴天")"
+        if !enabled { return "池塘已关闭 · \(scene)" }
+        if locked { return "屏幕已锁定 · \(scene)" }
+        if sleeping { return "屏幕休眠 · \(scene)" }
+        if reducedMotion { return "减少动态效果 · \(scene)" }
+        if paused { return "已暂停 · \(scene)" }
+        return "\(scene) · 主屏 30 FPS"
     }
 
     init(shaderURL: URL) throws {
@@ -59,7 +67,7 @@ final class TransparentMetalView: MTKView {
         window.isReleasedWhenClosed = false
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.title = "透明海洋 · 原壁纸覆盖层"
+        window.title = "池塘 · 桌面场景"
         view = TransparentMetalView(frame: NSRect(origin: .zero, size: bounds.size), device: MTLCreateSystemDefaultDevice())
         view.clearColor = MTLClearColorMake(0, 0, 0, 0)
         view.layer?.isOpaque = false
@@ -74,8 +82,6 @@ final class TransparentMetalView: MTKView {
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
         input = DesktopInput(screen: screen)
         input.onClick = { [weak self] point in self?.simulation.click(at: point) }
-        input.onDrag = { [weak self] point in self?.simulation.drag(to: point) }
-        input.onEnd = { [weak self] in self?.simulation.endDrag() }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { $0.screenChanged() }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidSleepNotification) { $0.sleeping = true; $0.updateActivity() }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidWakeNotification) { $0.sleeping = false; $0.screenChanged(); $0.updateActivity() }
@@ -106,7 +112,7 @@ final class TransparentMetalView: MTKView {
     private func updateActivity() {
         timer?.invalidate(); timer = nil
         input.enabled = animating && interactive
-        if !input.enabled { simulation.pointerMoved(to: nil); input.endGesture() }
+        if !input.enabled { input.endGesture() }
         previousTime = ProcessInfo.processInfo.systemUptime
         if enabled && !sleeping && !locked {
             if !window.isVisible { window.orderFrontRegardless() }
@@ -129,7 +135,6 @@ final class TransparentMetalView: MTKView {
         let delta = Float(min(start - previousTime, 1.0))
         previousTime = start
         if let screen = NSScreen.screens.first { input.refresh(screen: screen) }
-        simulation.pointerMoved(to: input.hover())
         simulation.update(deltaTime: delta)
         render()
         frameCount += 1
@@ -138,7 +143,7 @@ final class TransparentMetalView: MTKView {
     }
 
     func render() {
-        renderer.frame = simulation.frame(waterStrength: waterStrength)
+        renderer.frame = simulation.frame(waterStrength: 0.45)
         view.draw()
     }
 
@@ -172,7 +177,9 @@ final class TransparentMetalView: MTKView {
             "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,
             "opaque": window.isOpaque, "level": window.level.rawValue,
             "fish": simulation.fish.count, "ripples": simulation.ripples.count,
-            "currents": simulation.currents.count, "clicks": input.clickCount,
+            "leaves": simulation.leaves.count, "weather": weather.rawValue,
+            "weatherAmount": simulation.frame(waterStrength: 0.45).weatherAmount,
+            "clicks": input.clickCount,
             "drags": input.dragCount, "rejectedClicks": input.rejectedCount,
             "geometryValid": input.geometry.valid, "blockedWindows": input.geometry.blockingRects.count,
             "inputAvailable": input.available, "inputStatus": input.status,
