@@ -10,7 +10,8 @@ final class OceanSimulation {
     var weather: PondWeather = .sunny
 
     private var elapsedTime: Double = 0
-    private var tick = 0
+    private var nextRainTime = 8.0 / 60
+    private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
     private var generator: SeededGenerator
@@ -74,15 +75,20 @@ final class OceanSimulation {
     }
 
     private func integrate(step: Float) {
-        tick += 1
         elapsedTime += Double(step)
         time = Float(elapsedTime)
         weatherAmount += ((weather == .rainy ? 1 : 0) - weatherAmount) * min(1, step * 1.8)
         if weatherAmount < 0.0001 { weatherAmount = 0 }
 
         ageRipples(step: step)
-        if weather == .rainy && tick % 8 == 0 { spawnRain() }
-        if tick == 48 || (tick > 48 && (tick - 48) % 168 == 0) { spawnLeaf() }
+        while elapsedTime + 0.000_001 >= nextRainTime {
+            if weather == .rainy { spawnRain() }
+            nextRainTime += 8.0 / 60
+        }
+        while elapsedTime + 0.000_001 >= nextLeafTime {
+            spawnLeaf()
+            nextLeafTime += 168.0 / 60
+        }
         updateLeaves(step: step)
         updateFish(step: step)
     }
@@ -197,8 +203,8 @@ final class OceanSimulation {
         for index in leaves.indices {
             var leaf = leaves[index]
             leaf.age += step
-            leaf.rotation = (leaf.rotation + step * 0.33).truncatingRemainder(dividingBy: 2 * .pi)
             if leaf.stage == .falling {
+                leaf.rotation = (leaf.rotation + step * 0.33).truncatingRemainder(dividingBy: 2 * .pi)
                 leaf.position += leaf.velocity * step
                 if leaf.age >= leaf.fallDuration {
                     leaf.stage = .floating
@@ -217,6 +223,9 @@ final class OceanSimulation {
                         wave += (offset / distance) * amplitude
                     }
                 }
+                let acrossLeaf = SIMD2(-sin(leaf.rotation), cos(leaf.rotation))
+                let waveTurn = max(-0.24, min(0.24, simd_dot(acrossLeaf, wave) * 0.04))
+                leaf.rotation = (leaf.rotation + step * (0.33 + waveTurn)).truncatingRemainder(dividingBy: 2 * .pi)
                 let drift = SIMD2(sin(time * 0.53 + Float(leaf.id)), cos(time * 0.41 + Float(leaf.id))) * 1.8
                 leaf.velocity = limited(leaf.velocity * exp(-step * 0.9) + (wave + drift) * step, to: 16)
                 let candidate = leaf.position + leaf.velocity * step

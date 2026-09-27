@@ -15,11 +15,13 @@ private enum SimulationTests {
         try rainIsLocalAndMild()
         try rainPreservesClickPanicAndFallsOffLocally()
         try leavesLandFloatMoveAndExpire()
+        try groundedLeavesStopRotating()
         try shorelineContainsWholeFish()
         try resizeAndAspectMapping()
         try frameRateEquivalence()
+        try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 10 passed")
+        print("SimulationTests: 12 passed")
     }
 
     private static func populationAndShoreline() throws {
@@ -138,8 +140,31 @@ private enum SimulationTests {
         }
         try expect(simd_distance(position, moved.position) > 0.1, "floating leaves move")
         try expect(simd_distance(undisturbed.position, moved.position) > 0.1, "floating leaves respond to nearby waves")
+        let angleDifference = abs(atan2(sin(moved.rotation - undisturbed.rotation), cos(moved.rotation - undisturbed.rotation)))
+        try expect(angleDifference > 0.001 && angleDifference < 0.3, "waves gently rotate floating leaves")
         for _ in 0..<900 { sim.update(deltaTime: 1 / 30) }
         try expect(sim.leaves.allSatisfy { $0.age < 16 && $0.opacity >= 0 && $0.opacity <= 1 }, "old leaves expire and opacity stays valid")
+    }
+
+    private static func groundedLeavesStopRotating() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 1)
+        var grounded: PondLeaf?
+        for _ in 0..<240 {
+            if let leaf = sim.leaves.first(where: { $0.stage == .floating }) {
+                sim.click(at: leaf.position + SIMD2(0, -20))
+            }
+            sim.update(deltaTime: 1 / 30)
+            if let leaf = sim.leaves.first(where: { $0.stage == .grounded }) {
+                grounded = leaf
+                break
+            }
+        }
+        guard let grounded else { throw TestFailure(description: "wave-driven leaf should reach the bank") }
+        for _ in 0..<30 { sim.update(deltaTime: 1 / 30) }
+        guard let later = sim.leaves.first(where: { $0.id == grounded.id }) else {
+            throw TestFailure(description: "grounded leaf should survive the stability check")
+        }
+        try expect(later.stage == .grounded && later.rotation == grounded.rotation, "grounded leaves stay still")
     }
 
     private static func shorelineContainsWholeFish() throws {
@@ -179,6 +204,27 @@ private enum SimulationTests {
         try expect(abs(fast.time - 4) < 0.001 && abs(slow.time - 4) < 0.001, "both frame rates consume full duration")
         try expect(zip(fast.fish, slow.fish).allSatisfy { simd_distance($0.position, $1.position) < 0.2 }, "30 and 5 FPS fish positions agree")
         try expect(fast.ripples.count == slow.ripples.count && fast.leaves.count == slow.leaves.count, "event counts agree across frame rates")
+    }
+
+    private static func jitteredFrameTimingPreservesEvents() throws {
+        let exact = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        let jittered = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        exact.weather = .rainy
+        jittered.weather = .rainy
+        for _ in 0..<150 {
+            exact.update(deltaTime: 1 / 30)
+            exact.update(deltaTime: 1 / 30)
+            jittered.update(deltaTime: 0.034)
+            jittered.update(deltaTime: 2 / 30 - 0.034)
+        }
+        try expect(abs(exact.time - 10) < 0.001 && abs(jittered.time - 10) < 0.001, "both schedules consume ten seconds")
+        try expect(exact.leaves.map(\.id) == jittered.leaves.map(\.id), "jitter does not accelerate leaf births")
+        try expect(zip(exact.leaves, jittered.leaves).allSatisfy { $0.length == $1.length && $0.fallDuration == $1.fallDuration },
+                   "jitter preserves seeded leaf choices")
+        let exactRain = exact.ripples.filter { $0.source == .rain }
+        let jitteredRain = jittered.ripples.filter { $0.source == .rain }
+        try expect(exactRain.count == jitteredRain.count, "jitter does not accelerate rain impacts")
+        try expect(exactRain.map(\.position) == jitteredRain.map(\.position), "jitter preserves seeded rain positions")
     }
 
     private static func frameSnapshot() throws {
