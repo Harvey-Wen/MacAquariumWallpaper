@@ -88,6 +88,7 @@ final class TransparentMetalView: MTKView {
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
         input = DesktopInput(screen: screen)
         input.onClick = { [weak self] point in self?.simulation.click(at: point) }
+        input.onEnd = { [weak self] in self?.simulation.resetPointer() }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { $0.screenChanged() }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidSleepNotification) { $0.sleeping = true; $0.updateActivity() }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidWakeNotification) { $0.sleeping = false; $0.screenChanged(); $0.updateActivity() }
@@ -137,6 +138,7 @@ final class TransparentMetalView: MTKView {
 
     private func updateActivity() {
         timer?.invalidate(); timer = nil
+        simulation.resetPointer()
         input.enabled = animating && interactive
         if !input.enabled { input.endGesture() }
         previousTime = ProcessInfo.processInfo.systemUptime
@@ -162,6 +164,7 @@ final class TransparentMetalView: MTKView {
         previousTime = start
         if let screen = NSScreen.screens.first { input.refresh(screen: screen) }
         simulation.update(deltaTime: delta)
+        simulation.trackPointer(input.hover())
         render()
         frameCount += 1
         meanFrameMS += ((ProcessInfo.processInfo.systemUptime - start) * 1000 - meanFrameMS) / Double(frameCount)
@@ -174,6 +177,7 @@ final class TransparentMetalView: MTKView {
     }
 
     func screenChanged() {
+        simulation.resetPointer()
         guard let screen = NSScreen.screens.first else { window.orderOut(nil); return }
         let currentID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
         if currentID != displayID || window.frame != screen.frame {
@@ -188,6 +192,7 @@ final class TransparentMetalView: MTKView {
     }
 
     func stop() {
+        simulation.resetPointer()
         do { try backdrop.restoreAll(); backdropError = nil }
         catch { backdropError = error.localizedDescription; NSLog("池塘桌面背景恢复：%@", error.localizedDescription) }
         writeDiagnostics()
@@ -208,6 +213,7 @@ final class TransparentMetalView: MTKView {
             "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,
             "opaque": window.isOpaque, "level": window.level.rawValue,
             "fish": simulation.fish.count, "ripples": simulation.ripples.count,
+            "motionRipples": simulation.ripples.filter { $0.source == .motion }.count,
             "leaves": simulation.leaves.count, "weather": weather.rawValue,
             "weatherAmount": simulation.frame(waterStrength: 0.45).weatherAmount,
             "clicks": input.clickCount,

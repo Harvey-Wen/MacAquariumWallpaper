@@ -11,6 +11,10 @@ private enum SimulationTests {
     static func main() throws {
         try populationAndShoreline()
         try waterClicksAndFalloff()
+        try pointerMovementIsQuietAndBounded()
+        try pointerReentryAndJumpDoNotBridge()
+        try pointerAvoidanceIsMildAndLocal()
+        try pointerWavesMoveLeaves()
         try repeatedClicksRecover()
         try rainIsLocalAndMild()
         try rainPreservesClickPanicAndFallsOffLocally()
@@ -21,7 +25,7 @@ private enum SimulationTests {
         try frameRateEquivalence()
         try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 12 passed")
+        print("SimulationTests: 16 passed")
     }
 
     private static func populationAndShoreline() throws {
@@ -63,6 +67,88 @@ private enum SimulationTests {
         for _ in 0..<180 { sim.update(deltaTime: 1 / 30) }
         try expect(sim.fish.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && simd_length($0.velocity) < 240 }, "click storm remains finite and bounded")
         try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
+    }
+
+    private static func pointerMovementIsQuietAndBounded() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let start = SIMD2<Float>(700, 500)
+        sim.trackPointer(start)
+        sim.update(deltaTime: 0.2)
+        try expect(sim.ripples.isEmpty, "first hover and stillness are quiet")
+        sim.trackPointer(start + SIMD2(8, 0))
+        try expect(sim.ripples.isEmpty, "small displacement is quiet")
+        sim.trackPointer(start + SIMD2(16, 0))
+        try expect(sim.ripples.count == 1 && sim.ripples[0].source == .motion, "button-free movement makes a motion ripple")
+        try expect(sim.ripples[0].strength < 0.48, "motion is weaker than either click ring")
+        sim.trackPointer(start + SIMD2(32, 0))
+        try expect(sim.ripples.count == 1, "time gate prevents adjacent motion samples")
+        for _ in 0..<30 { sim.update(deltaTime: 1 / 30); sim.trackPointer(start + SIMD2(32, 0)) }
+        try expect(sim.ripples.filter { $0.source == .motion }.count == 1, "stationary pointer does not repeat ripples")
+        for index in 0..<600 {
+            sim.update(deltaTime: 1 / 300)
+            sim.trackPointer(SIMD2(720 + Float(index % 60), 500))
+        }
+        try expect(sim.ripples.count <= 24, "dense motion keeps ripple cap")
+        try expect(sim.ripples.filter { $0.source == .motion }.count <= 17, "simulation-time throttle limits motion events")
+        try expect(sim.fish.allSatisfy { $0.panic <= 0.18 && simd_length($0.velocity) <= 175 }, "dense motion keeps mild bounded fish response")
+    }
+
+    private static func pointerReentryAndJumpDoNotBridge() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let center = SIMD2<Float>(700, 500)
+        sim.trackPointer(center)
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(nil)
+        sim.trackPointer(center + SIMD2(40, 0))
+        try expect(sim.ripples.isEmpty, "nil gap and re-entry establish a quiet baseline")
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(SIMD2(5, 5))
+        sim.trackPointer(center + SIMD2(80, 0))
+        try expect(sim.ripples.isEmpty, "foliage gap and re-entry establish a quiet baseline")
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(center + SIMD2(350, 0))
+        try expect(sim.ripples.isEmpty, "large jump does not draw a trail")
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(center + SIMD2(365, 0))
+        try expect(sim.ripples.count == 1 && sim.ripples[0].position == center + SIMD2(365, 0), "movement after jump starts locally")
+        sim.resetPointer()
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(center)
+        try expect(sim.ripples.count == 1, "lifecycle reset makes next sample quiet")
+    }
+
+    private static func pointerAvoidanceIsMildAndLocal() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let calm = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let hit = sim.fish[0].position
+        let far = sim.fish.firstIndex { simd_distance($0.position, hit) > 200 }!
+        sim.trackPointer(hit + SIMD2(15, 0))
+        sim.update(deltaTime: 0.2)
+        calm.update(deltaTime: 0.2)
+        sim.trackPointer(hit)
+        try expect(sim.fish[0].panic > 0 && sim.fish[0].panic <= 0.18, "near fish gently avoids motion")
+        try expect(sim.fish[far].panic == calm.fish[far].panic && sim.fish[far].velocity == calm.fish[far].velocity, "remote fish has no motion impulse")
+        let motionPanic = sim.fish[0].panic
+        sim.click(at: hit)
+        let clickPanic = sim.fish[0].panic
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(hit + SIMD2(15, 0))
+        try expect(clickPanic > motionPanic && sim.fish[0].panic > 0.7, "motion cannot lower stronger click panic")
+    }
+
+    private static func pointerWavesMoveLeaves() throws {
+        let moved = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        let calm = OceanSimulation(size: SIMD2(1600, 1000), seed: 22)
+        for _ in 0..<180 { moved.update(deltaTime: 1 / 30); calm.update(deltaTime: 1 / 30) }
+        let leaf = moved.leaves.first { $0.stage == .floating }!
+        moved.trackPointer(leaf.position + SIMD2(18, 0))
+        moved.update(deltaTime: 0.2); calm.update(deltaTime: 0.2)
+        moved.trackPointer(leaf.position)
+        try expect(moved.ripples.contains { $0.source == .motion }, "floating leaf receives a motion wave")
+        for _ in 0..<30 { moved.update(deltaTime: 1 / 30); calm.update(deltaTime: 1 / 30) }
+        let a = moved.leaves.first { $0.id == leaf.id }!
+        let b = calm.leaves.first { $0.id == leaf.id }!
+        try expect(simd_distance(a.position, b.position) > 0.01, "motion wave moves a floating leaf")
     }
 
     private static func rainIsLocalAndMild() throws {

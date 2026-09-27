@@ -6,7 +6,7 @@ enum FishSpecies: Int, CaseIterable {
 }
 
 enum PondWeather: String { case sunny, rainy }
-enum DisturbanceKind: Int { case click, rain, leaf }
+enum DisturbanceKind: Int { case click, rain, leaf, motion }
 enum LeafStage: Int { case falling, floating, grounded }
 
 // All positions are screen points, with the origin at the screen's bottom left.

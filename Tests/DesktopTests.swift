@@ -41,12 +41,19 @@ import MetalKit
             check(controller.simulation.frame(waterStrength: 0.45).weatherAmount > 0, "rain transitions during animation")
         }
         let frameCount = controller.frameCount
+        let pointerCenter = controller.simulation.size * 0.5
+        controller.simulation.trackPointer(pointerCenter)
+        controller.simulation.update(deltaTime: 0.2)
         let pausedTime = controller.simulation.time
         let pausedFish = controller.simulation.fish.map(\.position)
         let pausedLeaves = controller.simulation.leaves.map(\.position)
         if !controller.reducedMotion { check(!pausedLeaves.isEmpty, "falling leaf reached desktop scene") }
         let pausedWeatherAmount = controller.simulation.frame(waterStrength: 0.45).weatherAmount
         controller.paused = true; advance()
+        let motionBeforePause = controller.simulation.ripples.filter { $0.source == .motion }.count
+        controller.simulation.trackPointer(pointerCenter + SIMD2(15, 0))
+        check(controller.simulation.ripples.filter { $0.source == .motion }.count == motionBeforePause,
+              "pause clears pointer trail before resume")
         check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == rainyBackdrop, "pause retains backing")
         check(controller.frameCount == frameCount && controller.window.isVisible, "pause keeps still image")
         check(controller.simulation.time == pausedTime && controller.simulation.fish.map(\.position) == pausedFish

@@ -14,6 +14,9 @@ final class OceanSimulation {
     private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
+    private var lastPointerPosition: SIMD2<Float>?
+    private var lastMotionPosition: SIMD2<Float>?
+    private var lastMotionTime: Double = 0
     private var generator: SeededGenerator
 
     init(size: SIMD2<Float>, seed: UInt64 = 42) {
@@ -45,9 +48,51 @@ final class OceanSimulation {
         }
     }
 
+    func trackPointer(_ position: SIMD2<Float>?) {
+        guard let position, PondGeometry.contains(position, size: size) else {
+            resetPointer()
+            return
+        }
+        guard let previous = lastPointerPosition else {
+            lastPointerPosition = position
+            lastMotionPosition = position
+            lastMotionTime = elapsedTime
+            return
+        }
+        let step = simd_distance(position, previous)
+        lastPointerPosition = position
+        if step > 140 {
+            lastMotionPosition = position
+            lastMotionTime = elapsedTime
+            return
+        }
+        guard step > 0.5, let lastMotionPosition,
+              simd_distance(position, lastMotionPosition) >= 11,
+              elapsedTime - lastMotionTime >= 0.12 else { return }
+        self.lastMotionPosition = position
+        lastMotionTime = elapsedTime
+        addRipple(at: position, strength: 0.34, source: .motion)
+        for index in fish.indices {
+            let offset = fish[index].position - position
+            let distance = simd_length(offset)
+            let influence = max(0, 1 - distance / 105)
+            guard influence > 0 else { continue }
+            fish[index].panic = max(fish[index].panic, influence * 0.18)
+            fish[index].velocity = limited(fish[index].velocity
+                + unit(offset, fallback: perpendicular(fish[index].velocity)) * (12 * influence), to: 175)
+        }
+    }
+
+    func resetPointer() {
+        lastPointerPosition = nil
+        lastMotionPosition = nil
+        lastMotionTime = elapsedTime
+    }
+
     func resize(to newSize: SIMD2<Float>) {
         let next = Self.validSize(newSize)
         guard next != size else { return }
+        resetPointer()
         let oldScale = max(size.x / PondGeometry.imageSize.x, size.y / PondGeometry.imageSize.y)
         let newScale = max(next.x / PondGeometry.imageSize.x, next.y / PondGeometry.imageSize.y)
         let ratio = newScale / oldScale
