@@ -53,8 +53,8 @@ struct DesktopWindowSnapshot {
                                              status: "窗口信息不完整，交互暂不可用")
             }
             let owner = record[kCGWindowOwnerName as String] as? String ?? ""
-            if systemOwners.contains(owner) { blockedPIDs.insert(pid) }
-            guard pid != Int(ownPID), level >= 0, alpha > 0,
+            if systemOwners.contains(owner) || pid == Int(ownPID) { blockedPIDs.insert(pid) }
+            guard level >= 0, alpha > 0,
                   cgRect.width > 1, cgRect.height > 1 else { continue }
             let rect = DesktopInputGeometry.appKitRect(cgRect, primaryTop: primaryTop)
             guard rect.intersects(screenFrame) else { continue }

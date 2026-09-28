@@ -1,7 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 struct FishVertex { float4 position, normal, detail; };
-struct FishUniforms { float4 viewport, placement, motion, kind; };
+struct FishUniforms { float4 viewport, placement, motion, kind, appearance; };
 struct EffectUniforms { float4 viewport, placement, style, travel, atmosphere; };
 struct VertexOut { float4 position [[position]]; float2 point; float3 local; float3 normal; float4 detail; };
 constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
@@ -44,7 +44,7 @@ vertex VertexOut fishVertex(uint id [[vertex_id]], const device FishVertex *mesh
     VertexOut o; o.position=float4(point/u.viewport.xy*2-1, 0.2+u.placement.w*0.6-p.z*0.1, 1);
     o.point=point; o.local=v.position.xyz; o.normal=v.normal.xyz; o.detail=v.detail; return o;
 }
-fragment float4 fishFragment(VertexOut in [[stage_in]], constant FishUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
+fragment float4 fishFragment(VertexOut in [[stage_in]], constant FishUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]], texture2d<float> paint [[texture(4)]]) {
     float water=maskAt(in.point,u.viewport.xy,mask); if(water<=0) discard_fragment();
     if(u.motion.z>0.5) {
         float alpha=0.09*smoothstep(0.05,0.75,abs(in.normal.z))*water;
@@ -61,6 +61,8 @@ fragment float4 fishFragment(VertexOut in [[stage_in]], constant FishUniforms &u
     if(kind==4) color=mix(ivory,black,smoothstep(0.45,0.64,patches));
     if(kind==5) color=mix(red,gold,smoothstep(0.88,0.96,patches));
     if(kind==3 || kind==6) color=mix(color,black,smoothstep(0.76,0.91,noise(p*1.2+id*13)));
+    if(u.appearance.x>0.5 && in.detail.x==0)
+        color=paint.sample(linearSampler,float2((in.local.x+0.6)/1.2,0.5-in.local.y/0.6)).rgb;
     float3 normal=normalize(in.normal);
     float curvedBack=pow(max(0.0,normal.z),1.7);
     float shade=0.37+0.59*curvedBack+0.10*normal.y;

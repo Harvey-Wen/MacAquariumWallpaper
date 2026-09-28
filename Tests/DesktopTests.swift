@@ -8,7 +8,10 @@ import MetalKit
         let screens = NSScreen.screens
         let beforeOptions = screens.map { NSWorkspace.shared.desktopImageOptions(for: $0)! }
         let before = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
-        let controller = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"))
+        let drawingsDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("pond-drawings-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: drawingsDirectory) }
+        let controller = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"),
+            drawingStore: FishDrawingStore(directory: drawingsDirectory))
         defer { controller.stop() }
         var count = 0
         func check(_ condition: @autoclosure () -> Bool, _ label: String) {

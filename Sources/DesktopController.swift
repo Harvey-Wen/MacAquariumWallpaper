@@ -32,6 +32,8 @@ final class TransparentMetalView: MTKView {
     }
     var diagnosticURL: URL?
     private let backdrop: DesktopBackdrop
+    private let drawingStore: FishDrawingStore
+    private(set) var customFishErrors: [String] = []
     private(set) var backdropError: String?
     private(set) var sleeping = false
     private var locked = false
@@ -56,8 +58,11 @@ final class TransparentMetalView: MTKView {
         return "\(scene) · 主屏 30 FPS"
     }
 
-    init(shaderURL: URL, backdrop: DesktopBackdrop? = nil) throws {
+    init(shaderURL: URL, backdrop: DesktopBackdrop? = nil, drawingStore: FishDrawingStore? = nil) throws {
         self.backdrop = try backdrop ?? DesktopBackdrop()
+        self.drawingStore = drawingStore ?? FishDrawingStore(directory:
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("local.macaquariumwallpaper.app/CustomFish", isDirectory: true))
         guard let screen = NSScreen.screens.first else {
             throw NSError(domain: "Ocean", code: 1, userInfo: [NSLocalizedDescriptionKey: "未找到可用显示器"])
         }
@@ -104,6 +109,14 @@ final class TransparentMetalView: MTKView {
             if let screen = NSScreen.screens.first { controller.input.refresh(screen: screen, force: true) }
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { $0.updateActivity() }
+        let saved = self.drawingStore.load()
+        customFishErrors = saved.errors
+        for drawing in saved.drawings {
+            do {
+                try renderer.registerDrawing(drawing)
+                simulation.addCustomFish(appearanceID: drawing.id)
+            } catch { customFishErrors.append(error.localizedDescription) }
+        }
     }
 
     private func observe(_ center: NotificationCenter, _ name: Notification.Name,
@@ -116,11 +129,22 @@ final class TransparentMetalView: MTKView {
 
     func start() { updateBackdrop(); updateActivity() }
 
+    func addCustomFish(_ drawing: FishDrawing) throws {
+        guard !simulation.fish.contains(where: { $0.customAppearanceID == drawing.id }) else { return }
+        try renderer.registerDrawing(drawing)
+        do { try drawingStore.save(drawing) }
+        catch { renderer.removeDrawing(id: drawing.id); throw error }
+        simulation.addCustomFish(appearanceID: drawing.id)
+        if !enabled { enabled = true }
+        else { updateBackdrop(); render(); writeDiagnostics() }
+    }
+
     private func updateBackdrop() {
         do {
             if enabled, let screen = NSScreen.screens.first {
                 let pixels = screen.convertRectToBacking(screen.frame).size
-                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)"
+                let customIDs = simulation.fish.compactMap(\.customAppearanceID).map(\.uuidString).sorted().joined(separator: ",")
+                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)-\(customIDs)"
                 try backdrop.apply(screen: screen, key: key) { url in
                     var frame = simulation.frame(waterStrength: 0.45)
                     frame.weatherAmount = weather == .rainy ? 1 : 0
@@ -214,6 +238,8 @@ final class TransparentMetalView: MTKView {
             "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,
             "opaque": window.isOpaque, "level": window.level.rawValue,
             "fish": simulation.fish.count, "ripples": simulation.ripples.count,
+            "customFish": simulation.fish.filter { $0.customAppearanceID != nil }.count,
+            "customFishLoadErrors": customFishErrors.count,
             "motionRipples": simulation.ripples.filter { $0.source == .motion }.count,
             "leaves": simulation.leaves.count, "weather": weather.rawValue,
             "weatherAmount": simulation.frame(waterStrength: 0.45).weatherAmount,

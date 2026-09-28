@@ -15,6 +15,7 @@ private struct FishUniforms {
     var placement: SIMD4<Float>
     var motion: SIMD4<Float>
     var kind: SIMD4<Float>
+    var appearance: SIMD4<Float>
 }
 
 private struct EffectUniforms {
@@ -46,6 +47,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let sampleCount: Int
     private let environment: MTLTexture
     private let waterDistance: MTLTexture
+    private let fallbackDrawing: MTLTexture
+    private var drawings: [UUID: MTLTexture] = [:]
     private(set) var lastGPUSeconds: Double = 0
 
     init(view: MTKView, shaderURL: URL) throws {
@@ -68,6 +71,14 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         }}
         distances.withUnsafeBytes { mask.replace(region: MTLRegionMake2D(0, 0, 800, 500), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 800 * 4) }
         waterDistance = mask
+        let fallbackDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+        fallbackDescriptor.usage = .shaderRead
+        guard let fallback = device.makeTexture(descriptor: fallbackDescriptor) else {
+            throw OceanRenderError.unavailable("无法创建鱼类默认纹理。")
+        }
+        var white: [UInt8] = [255, 255, 255, 255]
+        fallback.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &white, bytesPerRow: 4)
+        fallbackDrawing = fallback
         sampleCount = samples
         let source = try String(contentsOf: shaderURL, encoding: .utf8)
         let library = try device.makeLibrary(source: source, options: nil)
@@ -139,6 +150,16 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    func registerDrawing(_ drawing: FishDrawing) throws {
+        guard let image = drawing.rasterizedImage(width: 512, height: 256) else {
+            throw OceanRenderError.unavailable("无法生成鱼类绘画纹理。")
+        }
+        drawings[drawing.id] = try MTKTextureLoader(device: device).newTexture(
+            cgImage: image, options: [.SRGB: false, .origin: MTKTextureLoader.Origin.topLeft.rawValue])
+    }
+
+    func removeDrawing(id: UUID) { drawings.removeValue(forKey: id) }
+
     func draw(in view: MTKView) {
         guard let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
@@ -202,16 +223,19 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         effect(at: frame.size * 0.5, radius: 1, type: 0, strength: frame.waterStrength, seed: frame.weatherAmount)
         for fish in frame.fish.sorted(by: { $0.depth > $1.depth }) {
             guard let (buffer, count) = meshes[fish.species] else { continue }
+            let drawing = fish.customAppearanceID.flatMap { drawings[$0] }
             for shadow in [true, false] {
                 encoder.setRenderPipelineState(fishPipeline)
                 encoder.setDepthStencilState(shadow ? effectDepth : fishDepth)
                 var uniforms = FishUniforms(viewport: viewport,
                     placement: SIMD4(fish.position.x, fish.position.y, fish.length, min(max(fish.depth, 0), 1)),
                     motion: SIMD4(fish.heading, fish.phase, shadow ? 1 : 0, fish.panic),
-                    kind: SIMD4(Float(fish.id), phase(0.21), phase(0.17), frame.waterStrength))
+                    kind: SIMD4(Float(fish.id), phase(0.21), phase(0.17), frame.waterStrength),
+                    appearance: SIMD4(drawing == nil ? 0 : 1, 0, 0, 0))
                 encoder.setVertexBuffer(buffer, offset: 0, index: 0)
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 1)
                 encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FishUniforms>.stride, index: 0)
+                encoder.setFragmentTexture(drawing ?? fallbackDrawing, index: 4)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: count)
             }
         }

@@ -4,6 +4,7 @@ import AppKit
     private var desktop: DesktopController?
     private var statusItem: NSStatusItem?
     private var launchError: String?
+    private var drawingWindow: FishDrawingWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -42,6 +43,13 @@ import AppKit
         menu.addItem(title)
         menu.addItem(.separator())
         if let desktop {
+            add(menu, "画一条鱼…", #selector(drawFish), key: "n")
+            if !desktop.customFishErrors.isEmpty {
+                let warning = NSMenuItem(title: "部分手绘鱼未能载入（\(desktop.customFishErrors.count)）", action: nil, keyEquivalent: "")
+                warning.toolTip = desktop.customFishErrors.joined(separator: "\n")
+                warning.isEnabled = false; menu.addItem(warning)
+            }
+            menu.addItem(.separator())
             add(menu, "显示池塘", #selector(toggleEnabled), checked: desktop.enabled)
             add(menu, desktop.paused ? "继续游动" : "暂停游动", #selector(togglePaused))
             add(menu, "鼠标互动", #selector(toggleInteraction), checked: desktop.interactive)
@@ -72,6 +80,14 @@ import AppKit
     }
 
     @objc private func toggleEnabled() { desktop?.enabled.toggle() }
+    @objc private func drawFish() {
+        guard let desktop else { return }
+        if drawingWindow == nil {
+            drawingWindow = FishDrawingWindowController(onAdd: desktop.addCustomFish)
+        }
+        drawingWindow?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func togglePaused() { desktop?.paused.toggle() }
     @objc private func toggleInteraction() { desktop?.interactive.toggle() }
     @objc private func setWeather(_ sender: NSMenuItem) {
