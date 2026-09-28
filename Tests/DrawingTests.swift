@@ -14,6 +14,51 @@ import simd
         try expect(loaded.errors.isEmpty && Set(loaded.drawings.map(\.id)) == Set([first.id, second.id]), "separate drawings round trip")
         try expect(loaded.drawings.first(where: { $0.id == first.id }) == first, "stroke data round trips")
 
+        let legacyDirectory = directory.appendingPathComponent("legacy")
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let legacyID = UUID()
+        try Data("{\"id\":\"\(legacyID.uuidString)\",\"strokes\":[]}".utf8)
+            .write(to: legacyDirectory.appendingPathComponent(legacyID.uuidString + ".json"))
+        let legacy = FishDrawingStore(directory: legacyDirectory).load()
+        try expect(legacy.errors.isEmpty && legacy.drawings.count == 1 &&
+            legacy.drawings[0].resolvedBaseColor == FishColor(red: 1, green: 1, blue: 1),
+            "old JSON without baseColor uses white")
+
+        let blue = FishColor(red: 0, green: 0, blue: 1)
+        var painted = first
+        painted.baseColor = blue
+        painted.strokes.append(FishStroke(points: [FishPoint(x: 0.65, y: 0.5)],
+            color: FishColor(red: 1, green: 0, blue: 0), width: 0.04, erasing: false))
+        try store.save(painted)
+        try expect(store.load().drawings.first(where: { $0.id == first.id }) == painted, "base color persists")
+
+        var invalidBase = painted
+        invalidBase.baseColor = FishColor(red: 1.1, green: 0, blue: 0)
+        do { try store.save(invalidBase); throw TestError.failed("invalid base was saved") }
+        catch FishDrawingError.invalidDrawing {}
+        try expect(store.load().drawings.first(where: { $0.id == first.id }) == painted,
+            "invalid base does not overwrite valid record")
+
+        func pixel(_ drawing: FishDrawing, _ u: Float, _ v: Float) throws -> [UInt8] {
+            let image = try require(drawing.rasterizedImage(width: 240, height: 120), "raster image")
+            let bytes = try require(image.dataProvider?.data as Data?, "raster bytes")
+            let x = Int(u * Float(image.width)), y = Int(v * Float(image.height))
+            return Array(bytes[(y * image.width + x) * 4..<(y * image.width + x) * 4 + 4])
+        }
+        try expect(try pixel(painted, 0.58, 0.5)[2] > 200, "unpainted body uses blue base")
+        try expect(try pixel(painted, 0.65, 0.5)[0] > 200 && pixel(painted, 0.65, 0.5)[2] < 100,
+            "red strokes remain red over blue base")
+        let erase = FishStroke(points: [FishPoint(x: 0.5, y: 0.5)],
+            color: FishColor(red: 0, green: 0, blue: 0), width: 0.04, erasing: true)
+        painted.strokes.append(erase)
+        try expect(try pixel(painted, 0.5, 0.5)[2] > 200 && pixel(painted, 0.5, 0.5)[0] < 100,
+            "erase returns to blue base")
+        painted.baseColor = FishColor(red: 0, green: 1, blue: 0)
+        try expect(try pixel(painted, 0.5, 0.5)[1] > 200 && pixel(painted, 0.5, 0.5)[2] < 100,
+            "changing base recolors erased areas")
+        try expect(try pixel(painted, 0.65, 0.5)[0] > 200 && pixel(painted, 0.65, 0.5)[1] < 100,
+            "changing base preserves colored strokes")
+
         let corruptURL = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
         try Data("{ broken".utf8).write(to: corruptURL)
         loaded = store.load()

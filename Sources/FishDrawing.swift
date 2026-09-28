@@ -16,7 +16,7 @@ struct FishColor: Codable, Equatable {
     var blue: Float
 }
 
-/// Width is a fraction of the canvas height; erasing restores the white base.
+/// Width is a fraction of the canvas height; erasing restores the body base color.
 struct FishStroke: Codable, Equatable {
     var points: [FishPoint]
     var color: FishColor
@@ -27,6 +27,9 @@ struct FishStroke: Codable, Equatable {
 struct FishDrawing: Codable, Equatable {
     var id: UUID
     var strokes: [FishStroke]
+    var baseColor: FishColor? = nil
+
+    var resolvedBaseColor: FishColor { baseColor ?? FishColor(red: 1, green: 1, blue: 1) }
 
     /// The silhouette is sampled once from the actual koi body mesh.
     private static let bodyOutline: [(Float, Float)] = {
@@ -52,7 +55,7 @@ struct FishDrawing: Codable, Equatable {
         return path
     }
 
-    /// Transparent outside the koi body, white inside; rows are top to bottom.
+    /// Transparent outside the koi body, base-colored inside; rows are top to bottom.
     func rasterizedImage(width: Int = 512, height: Int = 256) -> CGImage? {
         guard width > 0, height > 0, width <= 4096, height <= 4096,
               (try? validate()) != nil else { return nil }
@@ -64,10 +67,11 @@ struct FishDrawing: Codable, Equatable {
         let path = Self.bodyPath(width: width, height: height)
         context.addPath(path)
         context.clip()
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        let base = resolvedBaseColor
+        context.setFillColor(CGColor(red: CGFloat(base.red), green: CGFloat(base.green), blue: CGFloat(base.blue), alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         for stroke in strokes where !stroke.points.isEmpty {
-            let color = stroke.erasing ? FishColor(red: 1, green: 1, blue: 1) : stroke.color
+            let color = stroke.erasing ? base : stroke.color
             context.setStrokeColor(CGColor(red: CGFloat(color.red), green: CGFloat(color.green), blue: CGFloat(color.blue), alpha: 1))
             context.setFillColor(CGColor(red: CGFloat(color.red), green: CGFloat(color.green), blue: CGFloat(color.blue), alpha: 1))
             context.setLineWidth(CGFloat(stroke.width) * CGFloat(height))
@@ -93,6 +97,12 @@ struct FishDrawing: Codable, Equatable {
 
     func validate() throws {
         guard strokes.count <= 10_000 else { throw FishDrawingError.invalidDrawing }
+        if let baseColor {
+            guard [baseColor.red, baseColor.green, baseColor.blue]
+                .allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+                throw FishDrawingError.invalidDrawing
+            }
+        }
         for stroke in strokes {
             guard stroke.points.count <= 100_000,
                   stroke.width.isFinite, stroke.width > 0, stroke.width <= 1,
