@@ -76,13 +76,6 @@ import AppKit
             }
             weather.submenu = choices; menu.addItem(weather)
             menu.addItem(.separator())
-            let hint = NSMenuItem(title: "滑过池水泛起轻波 · 点击会激起更明显的涟漪", action: nil, keyEquivalent: "")
-            hint.isEnabled = false; menu.addItem(hint)
-            if desktop.interactive {
-                let unavailable = NSMenuItem(title: desktop.input.status, action: nil, keyEquivalent: "")
-                unavailable.isEnabled = false; menu.addItem(unavailable)
-            }
-            menu.addItem(.separator())
         }
         add(menu, "退出池塘", #selector(quit), key: "q")
     }
