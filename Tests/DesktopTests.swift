@@ -10,12 +10,25 @@ import MetalKit
             return
         }
         let screens = NSScreen.screens
+        let realWallpaper = CommandLine.arguments.contains("--real-wallpaper")
+        // Real acceptance is explicit and also excludes legacy apps without a lock.
+        if realWallpaper && !NSRunningApplication.runningApplications(withBundleIdentifier: "local.macaquariumwallpaper.app").isEmpty {
+            throw NSError(domain: "DesktopTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先正常退出池塘，再运行真实壁纸验收"])
+        }
         let beforeOptions = screens.map { NSWorkspace.shared.desktopImageOptions(for: $0)! }
         let before = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
         let drawingsDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("pond-drawings-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: drawingsDirectory) }
+        var images = Dictionary(uniqueKeysWithValues: screens.map { (DesktopBackdrop.displayIdentifier($0), NSWorkspace.shared.desktopImageURL(for: $0)!) })
+        var options = Dictionary(uniqueKeysWithValues: screens.map { (DesktopBackdrop.displayIdentifier($0), NSWorkspace.shared.desktopImageOptions(for: $0)!) })
+        let readImage: (NSScreen) -> URL? = { screen in realWallpaper ? NSWorkspace.shared.desktopImageURL(for: screen) : images[DesktopBackdrop.displayIdentifier(screen)] }
+        let readOptions: (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]? = { screen in realWallpaper ? NSWorkspace.shared.desktopImageOptions(for: screen) : options[DesktopBackdrop.displayIdentifier(screen)] }
+        let backdrop = try realWallpaper ? DesktopBackdrop() : DesktopBackdrop(directory: drawingsDirectory.appendingPathComponent("backdrop"), readImage: readImage, readOptions: readOptions, setImage: { url, screen, value in
+            images[DesktopBackdrop.displayIdentifier(screen)] = url
+            options[DesktopBackdrop.displayIdentifier(screen)] = value
+        })
         let controller = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"),
-            drawingStore: FishDrawingStore(directory: drawingsDirectory))
+            backdrop: backdrop, drawingStore: FishDrawingStore(directory: drawingsDirectory))
         defer { controller.stop() }
         var count = 0
         func check(_ condition: @autoclosure () -> Bool, _ label: String) {
@@ -24,7 +37,7 @@ import MetalKit
         }
         func advance(_ seconds: Double = 0.16) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
         controller.start(); advance()
-        let sunnyBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+        let sunnyBackdrop = readImage(screens[0])!
         check(controller.backdropError == nil && sunnyBackdrop != before[0], "native sunny backdrop applied")
         let bitmap = NSBitmapImageRep(data: try Data(contentsOf: sunnyBackdrop))!
         let pixels = screens[0].convertRectToBacking(screens[0].frame).size
@@ -40,7 +53,7 @@ import MetalKit
         check(controller.simulation.fish.count == 30, "all koi present")
         check(controller.weather == .sunny && controller.status.contains("30 条锦鲤") && controller.status.contains("晴天"), "live koi and sunny status")
         controller.weather = .rainy; advance(1.1)
-        let rainyBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+        let rainyBackdrop = readImage(screens[0])!
         check(rainyBackdrop == sunnyBackdrop && controller.backdropError == nil, "weather retains system backing")
         check(FileManager.default.fileExists(atPath: sunnyBackdrop.path), "stable backing remains available")
         check(controller.simulation.weather == .rainy && controller.status.contains("雨天"), "rainy control reaches simulation and status")
@@ -62,7 +75,7 @@ import MetalKit
         controller.simulation.trackPointer(pointerCenter + SIMD2(15, 0))
         check(controller.simulation.ripples.filter { $0.source == .motion }.count == motionBeforePause,
               "pause clears pointer trail before resume")
-        check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == rainyBackdrop, "pause retains backing")
+        check(readImage(screens[0]) == rainyBackdrop, "pause retains backing")
         check(controller.frameCount == frameCount && controller.window.isVisible, "pause keeps still image")
         check(controller.simulation.time == pausedTime && controller.simulation.fish.map(\.position) == pausedFish
               && controller.simulation.leaves.map(\.position) == pausedLeaves, "pause freezes fish and leaves")
@@ -71,11 +84,11 @@ import MetalKit
         check(controller.simulation.time == pausedTime
               && controller.simulation.frame(waterStrength: 0.45).weatherAmount == pausedWeatherAmount, "pause freezes rain transition")
         let frozenAtmosphere = controller.simulation.frame(waterStrength: 0.45).atmosphere
-        let previousBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+        let previousBackdrop = readImage(screens[0])!
         let previousPNG = try Data(contentsOf: previousBackdrop)
         for weather in [PondWeather.snowy, .overcast, .cloudy] {
             controller.weather = weather; advance()
-            let nextBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+            let nextBackdrop = readImage(screens[0])!
             let nextPNG = try Data(contentsOf: nextBackdrop)
             check(controller.weather == weather && controller.status.contains(weather.title), "new weather reaches native status")
             check(controller.backdropError == nil && nextBackdrop == previousBackdrop && nextPNG == previousPNG,
@@ -89,8 +102,8 @@ import MetalKit
               "paused weather changes preserve every airborne particle")
         check(!controller.input.enabled, "pause stops input")
         controller.enabled = false
-        check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == before[0], "disable restores original image")
-        check(NSDictionary(dictionary: NSWorkspace.shared.desktopImageOptions(for: screens[0])!).isEqual(to: beforeOptions[0]), "disable restores original options exactly")
+        check(readImage(screens[0]) == before[0], "disable restores original image")
+        check(NSDictionary(dictionary: readOptions(screens[0])!).isEqual(to: beforeOptions[0]), "disable restores original options exactly")
         check(!controller.window.isVisible, "disable hides overlay")
         controller.enabled = true
         check(controller.window.isVisible && controller.paused, "re-enable retains pause")
@@ -102,9 +115,9 @@ import MetalKit
         controller.interactive = false
         check(!controller.input.enabled, "interaction switch")
         controller.interactive = true
-        let preSleepImage = NSWorkspace.shared.desktopImageURL(for: screens[0])
+        let preSleepImage = readImage(screens[0])
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
-        check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == preSleepImage, "sleep retains backing")
+        check(readImage(screens[0]) == preSleepImage, "sleep retains backing")
         check(controller.sleeping && !controller.window.isVisible, "sleep hides and stops")
         controller.paused = true
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
@@ -114,10 +127,10 @@ import MetalKit
         check(controller.window.frame == rect, "unchanged display stable")
         controller.stop()
         check(!controller.window.isVisible, "shutdown removes overlay")
-        let after = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
+        let after = screens.map { readImage($0) }
         check(before == after, "stop restores all original wallpaper URLs")
         check(screens.enumerated().allSatisfy { index, screen in
-            NSDictionary(dictionary: NSWorkspace.shared.desktopImageOptions(for: screen)!).isEqual(to: beforeOptions[index])
+            NSDictionary(dictionary: readOptions(screen)!).isEqual(to: beforeOptions[index])
         }, "stop restores all original options exactly")
         try journalTests(screen: screens[0], check: { check($0, $1) })
         print("PASS: \(count) native desktop and lifecycle checks")
@@ -238,6 +251,7 @@ import MetalKit
         check(current == userChoice && sets == 1, "user override survives weather and stop")
         current = original; options = originalOptions
         try first.apply(screen: screen, key: "sunny", render: render)
+        first.releaseOwnership()
         let recovered = try helper() // Simulates another executable using the same stable journal.
         try recovered.restoreAll()
         check(current == original && NSDictionary(dictionary: options).isEqual(to: originalOptions), "new helper restores crash journal and color options")
@@ -248,6 +262,7 @@ import MetalKit
         let saved = try JSONDecoder().decode([DesktopBackdrop.Record].self, from: Data(contentsOf: directory.appendingPathComponent("ownership.json")))
         check(saved.count == 1 && saved[0].original == original, "failed restoration retains original recovery record")
         failSet = false
+        recovered.releaseOwnership()
         try helper().restoreAll()
         check(current == original, "next launch retries failed restoration")
         let bounded = try helper()
@@ -266,22 +281,26 @@ import MetalKit
         check(current != original, "disconnected display retains ownership")
         try bounded.restoreAll()
         check(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.isEmpty, "successful restoration cleans generated frames")
+        bounded.releaseOwnership()
         let noOptions = try helper()
         options = [:]
         try noOptions.apply(screen: screen, key: "sunny", render: render)
         try noOptions.restoreAll()
         check(current == original && options.isEmpty, "empty public options are passed back unchanged")
+        noOptions.releaseOwnership()
         let previousSets = sets
         options = originalOptions
         let missingOptions = try DesktopBackdrop(directory: directory, readImage: { _ in current }, readOptions: { _ in nil }, setImage: { _, _, _ in sets += 1 })
         do { try missingOptions.apply(screen: screen, key: "sunny", render: render); check(false, "missing options must be rejected") }
         catch { check(sets == previousSets, "missing backup prevents system change") }
+        missingOptions.releaseOwnership()
         var queued: URL?
         let delayed = try DesktopBackdrop(directory: directory, readImage: { _ in original }, readOptions: { _ in originalOptions }, setImage: { url, _, _ in queued = url == original ? nil : url })
         do { try delayed.apply(screen: screen, key: "late", render: render); check(false, "late readback must surface") }
         catch { check(queued != nil, "timed out system request remains journaled") }
         try delayed.restoreAll()
         check(queued == nil, "immediate disable reasserts original after unacknowledged apply")
+        delayed.releaseOwnership()
         let renderRace = try helper()
         let setsBeforeRace = sets
         do {
@@ -300,6 +319,7 @@ import MetalKit
         check(current == userChoice, "explicit re-enable backs up the user-selected image")
         current = original; options = originalOptions
 
+        renderRace.releaseOwnership()
         var pendingImage: URL?
         var delayReplacement = false
         let lateReplacement = try DesktopBackdrop(directory: directory, readImage: { _ in current }, readOptions: { _ in originalOptions }, setImage: { url, _, _ in
@@ -323,6 +343,8 @@ import MetalKit
         try lateReplacement.restoreAll()
         check(current == original, "late completion remains owned and restores original wallpaper")
         check(!FileManager.default.fileExists(atPath: imageA.path) && !FileManager.default.fileExists(atPath: pendingImage!.path), "late completion files clean only after restoration")
+        noOptions.releaseOwnership()
+        lateReplacement.releaseOwnership()
         let previousSetsAfterRaces = sets
         let unwritable = try helper()
         let journal = directory.appendingPathComponent("ownership.json")

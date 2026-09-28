@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 /// A durable undo journal for the main display's static menu-bar backing image.
 @MainActor final class DesktopBackdrop {
@@ -15,25 +16,55 @@ import AppKit
     private let readImage: (NSScreen) -> URL?
     private let readOptions: (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]?
     private let setImage: (URL, NSScreen, [NSWorkspace.DesktopImageOptionKey: Any]) throws -> Void
+    private var lockFD: Int32 = -1
     private var records: [Record] = []
     private var recovered = false
     private var overridden = Set<String>()
     private var appliedKey: String?
     private var journal: URL { directory.appendingPathComponent("ownership.json") }
 
-    init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("local.macaquariumwallpaper.app/DesktopBackdrop", isDirectory: true),
+    init(directory: URL? = nil,
          readImage: @escaping (NSScreen) -> URL? = { NSWorkspace.shared.desktopImageURL(for: $0) },
          readOptions: @escaping (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]? = { NSWorkspace.shared.desktopImageOptions(for: $0) },
          setImage: @escaping (URL, NSScreen, [NSWorkspace.DesktopImageOptionKey: Any]) throws -> Void = {
              try NSWorkspace.shared.setDesktopImageURL($0, for: $1, options: $2)
          }) throws {
+        let usesSystemDirectory = directory == nil
+        // The production path is shared by every checkout, not relative to its executable.
+        let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("local.macaquariumwallpaper.app/DesktopBackdrop", isDirectory: true)
         self.directory = directory.resolvingSymlinksInPath()
         self.readImage = readImage; self.readOptions = readOptions; self.setImage = setImage
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: journal.path) {
-            records = try JSONDecoder().decode([Record].self, from: Data(contentsOf: journal))
+        // Migration guard for old builds that predate the filesystem lock.
+        if usesSystemDirectory && NSRunningApplication.runningApplications(withBundleIdentifier: "local.macaquariumwallpaper.app")
+            .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+            throw failure("另一个池塘实例正在运行，请先正常退出它")
         }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(self.directory.appendingPathComponent("owner.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw failure("无法打开背景所有权锁") }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(fd)
+            throw failure("另一个池塘实例正在管理桌面背景")
+        }
+        lockFD = fd
+        do {
+            if FileManager.default.fileExists(atPath: journal.path) {
+                records = try JSONDecoder().decode([Record].self, from: Data(contentsOf: journal))
+            }
+        } catch { releaseOwnership(); throw error }
+    }
+
+    deinit { if lockFD >= 0 { Darwin.close(lockFD) } }
+
+    // Only after work has drained (or in crash-recovery tests). Never unlink the lock
+    // file: a new inode would let two processes hold apparently exclusive locks.
+    func releaseOwnership() {
+        if lockFD >= 0 { Darwin.close(lockFD); lockFD = -1 }
+    }
+
+    private func requireOwnership() throws {
+        guard lockFD >= 0 else { throw failure("背景所有权已释放，拒绝旧实例操作") }
     }
 
     static func displayIdentifier(_ screen: NSScreen) -> String {
@@ -43,12 +74,16 @@ import AppKit
     }
 
     private func save(_ updated: [Record]) throws {
+        try requireOwnership()
         try JSONEncoder().encode(updated).write(to: journal, options: .atomic)
         records = updated
     }
 
     private func clean() throws {
-        let retained = Set(records.flatMap(\.images).map { $0.resolvingSymlinksInPath().path })
+        try requireOwnership()
+        // Even an orphaned active pond image must survive when its original is unknown.
+        let active = NSScreen.screens.compactMap(readImage)
+        let retained = Set((records.flatMap(\.images) + active).map { $0.resolvingSymlinksInPath().path })
         for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         where url.lastPathComponent.hasPrefix("pond-") && url.pathExtension == "png" && !retained.contains(url.resolvingSymlinksInPath().path) {
             try FileManager.default.removeItem(at: url)
@@ -74,6 +109,7 @@ import AppKit
 
     /// Missing displays retain their journal entries until they become available again.
     func restoreAll(screens: [NSScreen] = NSScreen.screens) throws {
+        try requireOwnership()
         appliedKey = nil
         overridden.removeAll()
         for record in records {
@@ -85,6 +121,7 @@ import AppKit
     }
 
     func apply(screen: NSScreen, key: String, render: (URL) throws -> Void) throws {
+        try requireOwnership()
         if !recovered {
             try restoreAll()
             recovered = true
