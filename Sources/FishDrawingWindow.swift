@@ -194,6 +194,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func clear(_ sender: Any?) {
         drawing.strokes.removeAll()
+        canvas.resetActiveStroke()
         canvas.strokes = []
         updateButtons()
     }
@@ -219,6 +220,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         drawing = FishDrawing(id: UUID(), strokes: [])
+        canvas.resetActiveStroke()
         erasing = false
         updateButtons()
     }
@@ -236,6 +238,13 @@ final class FishDrawingCanvas: NSView {
     private var dragTool: (FishColor, Float, Bool)?
 
     override var acceptsFirstResponder: Bool { true }
+
+    func resetActiveStroke() {
+        activeStroke = nil
+        dragTool = nil
+        leftCanvas = false
+        needsDisplay = true
+    }
 
     private func cachedBodyPath() -> CGPath {
         if bodyPath == nil || bodySize != bounds.size {

@@ -86,6 +86,7 @@ import AppKit
             drawingWindow = FishDrawingWindowController(onAdd: desktop.addCustomFish)
         }
         drawingWindow?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func togglePaused() { desktop?.paused.toggle() }
     @objc private func toggleInteraction() { desktop?.interactive.toggle() }
