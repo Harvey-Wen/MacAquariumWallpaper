@@ -113,6 +113,7 @@ struct DesktopGesture {
     private var monitor: Any?
     private var gesture = DesktopGesture()
     private var lastRefresh: TimeInterval = 0
+    private(set) var geometryQueryCount = 0
     private var primaryTop: CGFloat
     private var geometryStatus = "窗口信息暂不可用"
     private var eventStatus: String?
@@ -135,12 +136,14 @@ struct DesktopGesture {
     }
 
     func refresh(screen: NSScreen, force: Bool = false) {
+        guard enabled else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastRefresh > 0.15 else { return }
         lastRefresh = now
         primaryTop = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
         geometry.screenFrame = screen.frame
         geometry.visibleFrame = screen.visibleFrame
+        geometryQueryCount += 1
         guard let records = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
             geometry.valid = false; geometryStatus = "窗口信息暂不可用"; endGesture(); return
         }
@@ -158,8 +161,9 @@ struct DesktopGesture {
         // State polling only ends a gesture if mouse-up was delivered to our own menu.
         // Clicks are always sourced from event notifications, never polling edges.
         if gesture.active && NSEvent.pressedMouseButtons & 1 == 0 { endGesture() }
+        guard enabled else { return nil }
         let point = NSEvent.mouseLocation
-        guard enabled, available, geometry.containsDesktop(point) else { return nil }
+        guard available, geometry.containsDesktop(point) else { return nil }
         return geometry.localPoint(point)
     }
 

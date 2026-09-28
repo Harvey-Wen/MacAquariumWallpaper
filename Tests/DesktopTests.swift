@@ -125,7 +125,15 @@ import MetalKit
         }
         controller.interactive = false
         check(!controller.input.enabled, "interaction switch")
+        let queries = controller.input.geometryQueryCount
+        advance(0.4)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        controller.input.refresh(screen: screens[0], force: true)
+        check(controller.input.geometryQueryCount == queries, "disabled interaction performs no window geometry queries")
         controller.interactive = true
+        if !controller.reducedMotion {
+            check(controller.input.geometryQueryCount > queries, "re-enabling refreshes stale geometry immediately")
+        }
         let preSleepImage = readImage(screens[0])
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
         check(readImage(screens[0]) == preSleepImage, "sleep retains backing")

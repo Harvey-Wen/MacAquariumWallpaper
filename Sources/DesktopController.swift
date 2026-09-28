@@ -227,7 +227,11 @@ final class TransparentMetalView: MTKView {
     private func updateActivity() {
         timer?.invalidate(); timer = nil
         simulation.resetPointer()
+        let wasInputEnabled = input.enabled
         input.enabled = animating && interactive
+        if input.enabled && !wasInputEnabled, let screen = NSScreen.screens.first {
+            input.refresh(screen: screen, force: true)
+        }
         if !input.enabled { input.endGesture() }
         previousTime = ProcessInfo.processInfo.systemUptime
         if enabled && !sleeping && !locked {
@@ -250,7 +254,7 @@ final class TransparentMetalView: MTKView {
         // Lifecycle transitions reset previousTime, so sleep never produces a large jump.
         let delta = Float(min(start - previousTime, 1.0))
         previousTime = start
-        if let screen = NSScreen.screens.first { input.refresh(screen: screen) }
+        if input.enabled, let screen = NSScreen.screens.first { input.refresh(screen: screen) }
         simulation.update(deltaTime: delta)
         simulation.trackPointer(input.hover())
         render()
