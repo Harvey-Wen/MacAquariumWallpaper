@@ -23,10 +23,9 @@ final class TransparentMetalView: MTKView {
     var weather: PondWeather {
         get { simulation.weather }
         set {
-            let changed = simulation.weather != newValue
             simulation.weather = newValue
-            if changed { updateBackdrop() }
-            if enabled && !sleeping && !locked { render() }
+            // The next animation tick presents the transition. Exporting a system
+            // wallpaper here blocks that tick and triggers a desktop refresh.
             writeDiagnostics()
         }
     }
@@ -185,7 +184,7 @@ final class TransparentMetalView: MTKView {
             if enabled, let screen = NSScreen.screens.first {
                 let pixels = screen.convertRectToBacking(screen.frame).size
                 let fishIDs = simulation.fish.map { $0.identity.storageKey }.sorted().joined(separator: ",")
-                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)-\(fishIDs)"
+                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(fishIDs)"
                 try backdrop.apply(screen: screen, key: key) { url in
                     var frame = simulation.frame(waterStrength: 0.45)
                     frame.weatherAmount = weather == .rainy ? 1 : 0

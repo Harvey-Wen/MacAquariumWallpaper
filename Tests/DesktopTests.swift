@@ -5,6 +5,10 @@ import MetalKit
     @MainActor static func main() throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        if CommandLine.arguments.contains("--weather-only") {
+            try weatherTransitionTests()
+            return
+        }
         let screens = NSScreen.screens
         let beforeOptions = screens.map { NSWorkspace.shared.desktopImageOptions(for: $0)! }
         let before = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
@@ -37,8 +41,8 @@ import MetalKit
         check(controller.weather == .sunny && controller.status.contains("30 条锦鲤") && controller.status.contains("晴天"), "live koi and sunny status")
         controller.weather = .rainy; advance(1.1)
         let rainyBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
-        check(rainyBackdrop != sunnyBackdrop && controller.backdropError == nil, "weather replaces system backing")
-        check(!FileManager.default.fileExists(atPath: sunnyBackdrop.path), "superseded frame cleaned")
+        check(rainyBackdrop == sunnyBackdrop && controller.backdropError == nil, "weather retains system backing")
+        check(FileManager.default.fileExists(atPath: sunnyBackdrop.path), "stable backing remains available")
         check(controller.simulation.weather == .rainy && controller.status.contains("雨天"), "rainy control reaches simulation and status")
         if !controller.reducedMotion {
             check(controller.simulation.frame(waterStrength: 0.45).weatherAmount > 0, "rain transitions during animation")
@@ -67,19 +71,18 @@ import MetalKit
         check(controller.simulation.time == pausedTime
               && controller.simulation.frame(waterStrength: 0.45).weatherAmount == pausedWeatherAmount, "pause freezes rain transition")
         let frozenAtmosphere = controller.simulation.frame(waterStrength: 0.45).atmosphere
-        var previousBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
-        var previousPNG = try Data(contentsOf: previousBackdrop)
+        let previousBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+        let previousPNG = try Data(contentsOf: previousBackdrop)
         for weather in [PondWeather.snowy, .overcast, .cloudy] {
             controller.weather = weather; advance()
             let nextBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
             let nextPNG = try Data(contentsOf: nextBackdrop)
             check(controller.weather == weather && controller.status.contains(weather.title), "new weather reaches native status")
-            check(controller.backdropError == nil && nextBackdrop != previousBackdrop && nextPNG != previousPNG,
-                  "new weather refreshes native backing with distinct rendered image")
-            check(!FileManager.default.fileExists(atPath: previousBackdrop.path), "weather switching cleans previous backing")
+            check(controller.backdropError == nil && nextBackdrop == previousBackdrop && nextPNG == previousPNG,
+                  "new weather retains native backing without a desktop refresh")
+            check(FileManager.default.fileExists(atPath: previousBackdrop.path), "weather switching retains the backing file")
             check(controller.simulation.time == pausedTime && controller.simulation.frame(waterStrength: 0.45).atmosphere == frozenAtmosphere,
                   "paused weather selection leaves simulation and atmosphere frozen")
-            previousBackdrop = nextBackdrop; previousPNG = nextPNG
         }
         controller.weather = .sunny
         check(controller.simulation.frame(waterStrength: 0.45).precipitation == pausedPrecipitation,
@@ -118,6 +121,92 @@ import MetalKit
         }, "stop restores all original options exactly")
         try journalTests(screen: screens[0], check: { check($0, $1) })
         print("PASS: \(count) native desktop and lifecycle checks")
+    }
+
+    @MainActor static func weatherTransitionTests() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pond-weather-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = URL(fileURLWithPath: "/weather-test-original.heic")
+        var current = original
+        var reads = 0
+        var sets = 0
+        let backdrop = try DesktopBackdrop(directory: root.appendingPathComponent("backdrop"),
+            readImage: { _ in reads += 1; return current }, readOptions: { _ in [:] },
+            setImage: { url, _, _ in sets += 1; current = url })
+        let controller = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"),
+            backdrop: backdrop, drawingStore: FishDrawingStore(directory: root.appendingPathComponent("fish")))
+        defer { controller.stop() }
+        var checks = 0
+        func check(_ condition: @autoclosure () -> Bool, _ label: String) throws {
+            guard condition() else { throw NSError(domain: "WeatherTransitionTest", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: label]) }
+            checks += 1
+        }
+        func advance(_ seconds: Double) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
+        controller.start()
+        let backing = current
+        let originalSets = sets
+        let originalReads = reads
+        let selectedAt = ProcessInfo.processInfo.systemUptime
+        controller.weather = .rainy
+        let selectionMS = (ProcessInfo.processInfo.systemUptime - selectedAt) * 1000
+        print("Weather selection: \(String(format: "%.3f", selectionMS)) ms; system image changes: \(sets - originalSets)")
+        try check(current == backing && sets == originalSets && reads == originalReads,
+                  "weather selection must not read, render or replace the system backing")
+        advance(0.3)
+        let count = controller.frameCount
+        let time = controller.simulation.time
+        var maxSelectionMS = selectionMS
+        for previous in PondWeather.allCases {
+            controller.weather = previous
+            advance(0.04)
+            for next in PondWeather.allCases {
+                let before = controller.simulation.frame(waterStrength: 0.45)
+                let fish = controller.simulation.fish.map(\.position)
+                let start = ProcessInfo.processInfo.systemUptime
+                controller.weather = next
+                maxSelectionMS = max(maxSelectionMS, (ProcessInfo.processInfo.systemUptime - start) * 1000)
+                let after = controller.simulation.frame(waterStrength: 0.45)
+                try check(after.time == before.time && after.atmosphere == before.atmosphere
+                          && after.precipitation == before.precipitation && after.surfaceSnow == before.surfaceSnow
+                          && controller.simulation.fish.map(\.position) == fish,
+                          "rapid selection preserves the current scene until the next animation frame")
+                try check(controller.weather == next && controller.status.contains(next.title), "selected weather reaches menu status")
+            }
+        }
+        try check(current == backing && sets == originalSets && reads == originalReads,
+                  "all weather pairs avoid system wallpaper work")
+        if !controller.reducedMotion {
+            try check(controller.frameCount > count && controller.simulation.time > time,
+                      "animation continues across successive selections")
+        }
+        controller.screenChanged()
+        try check(current == backing && sets == originalSets, "unchanged screen notification does not apply a deferred weather backdrop")
+        controller.paused = true
+        let frozen = controller.simulation.frame(waterStrength: 0.45)
+        for weather in PondWeather.allCases { controller.weather = weather }
+        advance(0.1)
+        let still = controller.simulation.frame(waterStrength: 0.45)
+        try check(still.time == frozen.time && still.atmosphere == frozen.atmosphere
+                  && still.precipitation == frozen.precipitation && still.surfaceSnow == frozen.surfaceSnow,
+                  "paused selection keeps the entire weather scene frozen")
+        try check(current == backing && sets == originalSets, "paused selection retains the menu bar backing")
+        controller.paused = false
+        advance(0.12)
+        if !controller.reducedMotion {
+            try check(controller.simulation.frame(waterStrength: 0.45).time > frozen.time, "resume continues from the frozen scene")
+        }
+        controller.enabled = false
+        let disabledSets = sets
+        controller.weather = .snowy
+        try check(current == original && sets == disabledSets && !controller.window.isVisible,
+                  "hidden weather selection leaves the original wallpaper alone")
+        controller.enabled = true
+        try check(current != original && sets == disabledSets + 1 && controller.backdropError == nil,
+                  "explicit re-enable still creates a pond backing")
+        controller.stop()
+        try check(current == original, "stop restores the original backing")
+        print("PASS: \(checks) weather transition checks; max selection \(String(format: "%.3f", maxSelectionMS)) ms")
     }
 
     @MainActor static func journalTests(screen: NSScreen, check: (Bool, String) -> Void) throws {
