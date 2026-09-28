@@ -18,6 +18,7 @@ import Darwin
     private let setImage: (URL, NSScreen, [NSWorkspace.DesktopImageOptionKey: Any]) throws -> Void
     private var lockFD: Int32 = -1
     private var records: [Record] = []
+    private var operationActive = false
     private var recovered = false
     private var overridden = Set<String>()
     private var appliedKey: String?
@@ -60,6 +61,7 @@ import Darwin
     // Only after work has drained (or in crash-recovery tests). Never unlink the lock
     // file: a new inode would let two processes hold apparently exclusive locks.
     func releaseOwnership() {
+        precondition(!operationActive, "Drain background work before releasing ownership")
         if lockFD >= 0 { Darwin.close(lockFD); lockFD = -1 }
     }
 
@@ -90,7 +92,7 @@ import Darwin
         }
     }
 
-    private func restore(_ record: Record, on screen: NSScreen) throws {
+    private func restore(_ record: Record, on screen: NSScreen) async throws {
         guard let current = readImage(screen) else { throw failure("无法读取当前桌面背景，保留恢复记录") }
         // A timed-out request may still be queued in the system. Reassert the
         // original even if readback has not yet advanced to the pending image.
@@ -101,36 +103,49 @@ import Darwin
             }
             let options = Dictionary(uniqueKeysWithValues: raw.map { (NSWorkspace.DesktopImageOptionKey(rawValue: $0.key), $0.value) })
             try setImage(record.original, screen, options)
-            guard waitForImage(record.original, screen: screen) else { throw failure("系统未确认恢复原桌面背景") }
+            guard try await waitForImage(record.original, screen: screen) else { throw failure("系统未确认恢复原桌面背景") }
         }
         try save(records.filter { $0.display != record.display })
         try clean()
     }
 
     /// Missing displays retain their journal entries until they become available again.
-    func restoreAll(screens: [NSScreen] = NSScreen.screens) throws {
+    func restoreAll(screens: [NSScreen] = NSScreen.screens) async throws {
+        try beginOperation()
+        defer { operationActive = false }
+        try await restoreRecords(screens: screens)
+    }
+
+    private func beginOperation() throws {
         try requireOwnership()
+        guard !operationActive else { throw failure("背景操作尚未完成") }
+        operationActive = true
+    }
+
+    private func restoreRecords(screens: [NSScreen] = NSScreen.screens) async throws {
         appliedKey = nil
         overridden.removeAll()
         for record in records {
             if let screen = screens.first(where: { Self.displayIdentifier($0) == record.display }) {
-                try restore(record, on: screen)
+                try await restore(record, on: screen)
             }
         }
         try clean()
     }
 
-    func apply(screen: NSScreen, key: String, render: (URL) throws -> Void) throws {
-        try requireOwnership()
+    func apply(screen: NSScreen, key: String, isCurrent: () -> Bool = { true },
+               render: (URL) async throws -> Void) async throws {
+        try beginOperation()
+        defer { operationActive = false }
         if !recovered {
-            try restoreAll()
+            try await restoreRecords()
             recovered = true
         }
         let identifier = Self.displayIdentifier(screen)
         // Moving the primary display restores any formerly affected display first.
         for record in records where record.display != identifier {
             if let previous = NSScreen.screens.first(where: { Self.displayIdentifier($0) == record.display }) {
-                try restore(record, on: previous)
+                try await restore(record, on: previous)
             }
         }
         guard !overridden.contains(identifier) else { return }
@@ -144,7 +159,7 @@ import Darwin
             }
             guard existing.images.contains(current) else {
                 overridden.insert(identifier)
-                try restore(existing, on: screen) // Releases ownership without changing the user's image.
+                try await restore(existing, on: screen) // Releases ownership without changing the user's image.
                 appliedKey = nil
                 return
             }
@@ -163,12 +178,16 @@ import Darwin
             record = Record(display: identifier, original: current, options: data, images: [], pending: false)
         }
         let next = directory.appendingPathComponent("pond-\(UUID().uuidString).png")
-        do { try render(next) }
+        do { try await render(next); try Task.checkCancellation() }
         catch { try? FileManager.default.removeItem(at: next); throw error }
         guard readImage(screen) == current else {
             overridden.insert(identifier)
             try FileManager.default.removeItem(at: next)
             throw failure("生成期间桌面背景已改变，保留你的选择")
+        }
+        guard isCurrent() else {
+            try FileManager.default.removeItem(at: next)
+            return
         }
         record.images.append(next)
         record.pending = true
@@ -176,7 +195,7 @@ import Darwin
         do { try save(records.filter { $0.display != identifier } + [record]) }
         catch { try? FileManager.default.removeItem(at: next); throw error }
         try setImage(next, screen, [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
-        guard waitForImage(next, screen: screen) else { throw failure("系统未确认池塘桌面背景") }
+        guard try await waitForImage(next, screen: screen) else { throw failure("系统未确认池塘桌面背景") }
         record.images = [next]
         record.pending = false
         try save(records.filter { $0.display != identifier } + [record])
@@ -186,11 +205,11 @@ import Darwin
 
     // NSWorkspace returns before its read API catches up (observed on macOS 15).
     // Keep the journal until acknowledgment; avoid running a nested UI event loop.
-    private func waitForImage(_ url: URL, screen: NSScreen) -> Bool {
+    private func waitForImage(_ url: URL, screen: NSScreen) async throws -> Bool {
         let deadline = ProcessInfo.processInfo.systemUptime + 2
         repeat {
             if readImage(screen) == url { return true }
-            Thread.sleep(forTimeInterval: 0.02)
+            try await Task.sleep(nanoseconds: 20_000_000)
         } while ProcessInfo.processInfo.systemUptime < deadline
         return readImage(screen) == url
     }

@@ -2,11 +2,20 @@ import AppKit
 import MetalKit
 
 @main struct DesktopTests {
-    @MainActor static func main() throws {
+    @MainActor static func main() {
+        _ = NSApplication.shared
+        Task { @MainActor in
+            do { try await runTests(); exit(0) }
+            catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
+        }
+        NSApp.run()
+    }
+
+    @MainActor static func runTests() async throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--weather-only") {
-            try weatherTransitionTests()
+            try await weatherTransitionTests()
             return
         }
         let screens = NSScreen.screens
@@ -36,7 +45,7 @@ import MetalKit
             count += 1
         }
         func advance(_ seconds: Double = 0.16) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
-        controller.start(); advance()
+        controller.start(); await controller.waitForBackdrop(); advance()
         let sunnyBackdrop = readImage(screens[0])!
         check(controller.backdropError == nil && sunnyBackdrop != before[0], "native sunny backdrop applied")
         let bitmap = NSBitmapImageRep(data: try Data(contentsOf: sunnyBackdrop))!
@@ -102,10 +111,12 @@ import MetalKit
               "paused weather changes preserve every airborne particle")
         check(!controller.input.enabled, "pause stops input")
         controller.enabled = false
+        await controller.waitForBackdrop()
         check(readImage(screens[0]) == before[0], "disable restores original image")
         check(NSDictionary(dictionary: readOptions(screens[0])!).isEqual(to: beforeOptions[0]), "disable restores original options exactly")
         check(!controller.window.isVisible, "disable hides overlay")
         controller.enabled = true
+        await controller.waitForBackdrop()
         check(controller.window.isVisible && controller.paused, "re-enable retains pause")
         controller.paused = false; advance()
         if !controller.reducedMotion { check(controller.frameCount > frameCount, "resume renders") }
@@ -126,17 +137,18 @@ import MetalKit
         controller.screenChanged()
         check(controller.window.frame == rect, "unchanged display stable")
         controller.stop()
+        await controller.waitForBackdrop()
         check(!controller.window.isVisible, "shutdown removes overlay")
         let after = screens.map { readImage($0) }
         check(before == after, "stop restores all original wallpaper URLs")
         check(screens.enumerated().allSatisfy { index, screen in
             NSDictionary(dictionary: readOptions(screen)!).isEqual(to: beforeOptions[index])
         }, "stop restores all original options exactly")
-        try journalTests(screen: screens[0], check: { check($0, $1) })
+        try await journalTests(screen: screens[0], check: { check($0, $1) })
         print("PASS: \(count) native desktop and lifecycle checks")
     }
 
-    @MainActor static func weatherTransitionTests() throws {
+    @MainActor static func weatherTransitionTests() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pond-weather-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let original = URL(fileURLWithPath: "/weather-test-original.heic")
@@ -157,6 +169,7 @@ import MetalKit
         }
         func advance(_ seconds: Double) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
         controller.start()
+        await controller.waitForBackdrop()
         let backing = current
         let originalSets = sets
         let originalReads = reads
@@ -210,19 +223,22 @@ import MetalKit
             try check(controller.simulation.frame(waterStrength: 0.45).time > frozen.time, "resume continues from the frozen scene")
         }
         controller.enabled = false
+        await controller.waitForBackdrop()
         let disabledSets = sets
         controller.weather = .snowy
         try check(current == original && sets == disabledSets && !controller.window.isVisible,
                   "hidden weather selection leaves the original wallpaper alone")
         controller.enabled = true
+        await controller.waitForBackdrop()
         try check(current != original && sets == disabledSets + 1 && controller.backdropError == nil,
                   "explicit re-enable still creates a pond backing")
         controller.stop()
+        await controller.waitForBackdrop()
         try check(current == original, "stop restores the original backing")
         print("PASS: \(checks) weather transition checks; max selection \(String(format: "%.3f", maxSelectionMS)) ms")
     }
 
-    @MainActor static func journalTests(screen: NSScreen, check: (Bool, String) -> Void) throws {
+    @MainActor static func journalTests(screen: NSScreen, check: (Bool, String) -> Void) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pond-tests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let original = URL(fileURLWithPath: "/original.heic")
@@ -240,82 +256,82 @@ import MetalKit
         }
         func render(_ url: URL) throws { try Data("test".utf8).write(to: url) }
         let first = try helper()
-        try first.apply(screen: screen, key: "sunny", render: render)
+        try await first.apply(screen: screen, key: "sunny", render: render)
         let firstImage = current
-        try first.apply(screen: screen, key: "sunny", render: render)
+        try await first.apply(screen: screen, key: "sunny", render: render)
         check(sets == 1 && current == firstImage, "same backing is not regenerated")
         current = userChoice
-        try first.apply(screen: screen, key: "rainy", render: render)
-        try first.apply(screen: screen, key: "sunny", render: render)
-        try first.restoreAll()
+        try await first.apply(screen: screen, key: "rainy", render: render)
+        try await first.apply(screen: screen, key: "sunny", render: render)
+        try await first.restoreAll()
         check(current == userChoice && sets == 1, "user override survives weather and stop")
         current = original; options = originalOptions
-        try first.apply(screen: screen, key: "sunny", render: render)
+        try await first.apply(screen: screen, key: "sunny", render: render)
         first.releaseOwnership()
         let recovered = try helper() // Simulates another executable using the same stable journal.
-        try recovered.restoreAll()
+        try await recovered.restoreAll()
         check(current == original && NSDictionary(dictionary: options).isEqual(to: originalOptions), "new helper restores crash journal and color options")
-        try recovered.apply(screen: screen, key: "sunny", render: render)
+        try await recovered.apply(screen: screen, key: "sunny", render: render)
         failSet = true
-        do { try recovered.restoreAll(); check(false, "restore failure must surface") }
+        do { try await recovered.restoreAll(); check(false, "restore failure must surface") }
         catch { check(true, "restore failure surfaces") }
         let saved = try JSONDecoder().decode([DesktopBackdrop.Record].self, from: Data(contentsOf: directory.appendingPathComponent("ownership.json")))
         check(saved.count == 1 && saved[0].original == original, "failed restoration retains original recovery record")
         failSet = false
         recovered.releaseOwnership()
-        try helper().restoreAll()
+        try await helper().restoreAll()
         check(current == original, "next launch retries failed restoration")
         let bounded = try helper()
-        try bounded.apply(screen: screen, key: "sunny", render: render)
-        for index in 0..<6 { try bounded.apply(screen: screen, key: "weather-\(index)", render: render) }
+        try await bounded.apply(screen: screen, key: "sunny", render: render)
+        for index in 0..<6 { try await bounded.apply(screen: screen, key: "weather-\(index)", render: render) }
         let generated = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }
         check(generated.count == 1, "weather updates retain only one generated frame")
         failSet = true
         for index in 0..<4 {
-            do { try bounded.apply(screen: screen, key: "failed-\(index)", render: render); check(false, "apply failure must surface") }
+            do { try await bounded.apply(screen: screen, key: "failed-\(index)", render: render); check(false, "apply failure must surface") }
             catch { check(true, "apply failure surfaces") }
         }
         check(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.count == 2, "failed replacements retain at most current and pending frame")
         failSet = false
-        try bounded.restoreAll(screens: [])
+        try await bounded.restoreAll(screens: [])
         check(current != original, "disconnected display retains ownership")
-        try bounded.restoreAll()
+        try await bounded.restoreAll()
         check(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".png") }.isEmpty, "successful restoration cleans generated frames")
         bounded.releaseOwnership()
         let noOptions = try helper()
         options = [:]
-        try noOptions.apply(screen: screen, key: "sunny", render: render)
-        try noOptions.restoreAll()
+        try await noOptions.apply(screen: screen, key: "sunny", render: render)
+        try await noOptions.restoreAll()
         check(current == original && options.isEmpty, "empty public options are passed back unchanged")
         noOptions.releaseOwnership()
         let previousSets = sets
         options = originalOptions
         let missingOptions = try DesktopBackdrop(directory: directory, readImage: { _ in current }, readOptions: { _ in nil }, setImage: { _, _, _ in sets += 1 })
-        do { try missingOptions.apply(screen: screen, key: "sunny", render: render); check(false, "missing options must be rejected") }
+        do { try await missingOptions.apply(screen: screen, key: "sunny", render: render); check(false, "missing options must be rejected") }
         catch { check(sets == previousSets, "missing backup prevents system change") }
         missingOptions.releaseOwnership()
         var queued: URL?
         let delayed = try DesktopBackdrop(directory: directory, readImage: { _ in original }, readOptions: { _ in originalOptions }, setImage: { url, _, _ in queued = url == original ? nil : url })
-        do { try delayed.apply(screen: screen, key: "late", render: render); check(false, "late readback must surface") }
+        do { try await delayed.apply(screen: screen, key: "late", render: render); check(false, "late readback must surface") }
         catch { check(queued != nil, "timed out system request remains journaled") }
-        try delayed.restoreAll()
+        try await delayed.restoreAll()
         check(queued == nil, "immediate disable reasserts original after unacknowledged apply")
         delayed.releaseOwnership()
         let renderRace = try helper()
         let setsBeforeRace = sets
         do {
-            try renderRace.apply(screen: screen, key: "first", render: { url in
+            try await renderRace.apply(screen: screen, key: "first", render: { url in
                 try render(url); current = userChoice
             })
             check(false, "first-render user change must surface")
         } catch { check(current == userChoice, "first-render user choice is preserved") }
         var renderedAgain = false
-        try renderRace.apply(screen: screen, key: "next-weather", render: { url in renderedAgain = true; try render(url) })
+        try await renderRace.apply(screen: screen, key: "next-weather", render: { url in renderedAgain = true; try render(url) })
         check(!renderedAgain && sets == setsBeforeRace && current == userChoice, "first-render override suppresses subsequent weather replacement")
-        try renderRace.restoreAll()
-        try renderRace.apply(screen: screen, key: "explicit-enable", render: render)
+        try await renderRace.restoreAll()
+        try await renderRace.apply(screen: screen, key: "explicit-enable", render: render)
         check(current != userChoice, "explicit disable and enable resets first-render override")
-        try renderRace.restoreAll()
+        try await renderRace.restoreAll()
         check(current == userChoice, "explicit re-enable backs up the user-selected image")
         current = original; options = originalOptions
 
@@ -325,14 +341,14 @@ import MetalKit
         let lateReplacement = try DesktopBackdrop(directory: directory, readImage: { _ in current }, readOptions: { _ in originalOptions }, setImage: { url, _, _ in
             if delayReplacement { pendingImage = url } else { current = url }
         })
-        try lateReplacement.apply(screen: screen, key: "A", render: render)
+        try await lateReplacement.apply(screen: screen, key: "A", render: render)
         let imageA = current
         delayReplacement = true
-        do { try lateReplacement.apply(screen: screen, key: "B", render: render); check(false, "replacement timeout must surface") }
+        do { try await lateReplacement.apply(screen: screen, key: "B", render: render); check(false, "replacement timeout must surface") }
         catch { check(pendingImage != nil, "late replacement is outstanding") }
         var renderedC = false
         do {
-            try lateReplacement.apply(screen: screen, key: "C", render: { url in
+            try await lateReplacement.apply(screen: screen, key: "C", render: { url in
                 renderedC = true; current = pendingImage!; try render(url)
             })
             check(false, "retry must be refused while replacement is outstanding")
@@ -340,7 +356,7 @@ import MetalKit
         check(FileManager.default.fileExists(atPath: imageA.path) && FileManager.default.fileExists(atPath: pendingImage!.path), "retry retains both current and outstanding images")
         current = pendingImage! // The original timed-out request finally completes.
         delayReplacement = false
-        try lateReplacement.restoreAll()
+        try await lateReplacement.restoreAll()
         check(current == original, "late completion remains owned and restores original wallpaper")
         check(!FileManager.default.fileExists(atPath: imageA.path) && !FileManager.default.fileExists(atPath: pendingImage!.path), "late completion files clean only after restoration")
         noOptions.releaseOwnership()
@@ -350,7 +366,7 @@ import MetalKit
         let journal = directory.appendingPathComponent("ownership.json")
         try FileManager.default.removeItem(at: journal)
         try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: false)
-        do { try unwritable.apply(screen: screen, key: "sunny", render: render); check(false, "failed journal must be rejected") }
+        do { try await unwritable.apply(screen: screen, key: "sunny", render: render); check(false, "failed journal must be rejected") }
         catch { check(sets == previousSetsAfterRaces && current == original, "failed durable backup never replaces user wallpaper") }
 
     }

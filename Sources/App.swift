@@ -111,7 +111,11 @@ import AppKit
            let weather = PondWeather(rawValue: value) { desktop?.weather = weather }
     }
     @objc private func quit() { NSApp.terminate(nil) }
-    func applicationWillTerminate(_ notification: Notification) { desktop?.stop() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let desktop else { return .terminateNow }
+        desktop.stop { sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
 }
 
 @main struct OceanApplication {

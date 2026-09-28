@@ -328,11 +328,24 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     /// Deterministic offscreen render; rows run top-to-bottom, bytes are premultiplied RGBA8.
     func renderRGBA(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true) throws -> [UInt8] {
+        let (command, output) = try readbackCommand(frame: frame, width: width, height: height, includeEnvironment: includeEnvironment)
+        command.commit()
+        command.waitUntilCompleted()
+        if let error = command.error { throw error }
+        lastGPUSeconds = command.gpuEndTime - command.gpuStartTime
+        return Self.readPixels(output, width: width, height: height)
+    }
+
+    private func readbackCommand(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true) throws -> (MTLCommandBuffer, MTLTexture) {
         guard width > 0, height > 0 else { throw OceanRenderError.unavailable("导出尺寸必须大于零。") }
         guard prepareTargets(width: width, height: height), let targets, let command = queue.makeCommandBuffer() else {
             throw OceanRenderError.unavailable("无法创建离屏画布。")
         }
-        let output = targets.output, multisample = targets.msaa, depth = targets.depth
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.storageMode = .shared
+        descriptor.usage = .renderTarget
+        guard let output = device.makeTexture(descriptor: descriptor) else { throw OceanRenderError.unavailable("无法创建读回纹理。") }
+        let multisample = targets.msaa, depth = targets.depth
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = sampleCount > 1 ? multisample : output
         pass.colorAttachments[0].resolveTexture = sampleCount > 1 ? output : nil
@@ -344,10 +357,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         pass.depthAttachment.storeAction = .dontCare
         pass.depthAttachment.clearDepth = 1
         encode(frame, pass: pass, command: command, includeEnvironment: includeEnvironment)
-        command.commit()
-        command.waitUntilCompleted()
-        if let error = command.error { throw error }
-        lastGPUSeconds = command.gpuEndTime - command.gpuStartTime
+        return (command, output)
+    }
+
+    private static func readPixels(_ output: MTLTexture, width: Int, height: Int) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         output.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         for index in stride(from: 0, to: bytes.count, by: 4) { bytes.swapAt(index, index + 2) }
@@ -357,7 +370,30 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     /// Export a transparent PNG, or an opaque sample composited over an RGB color (0...1).
     func writePNG(frame: OceanFrame, width: Int, height: Int, to url: URL,
                   background: SIMD3<Float>? = nil) throws {
-        var bytes = try renderRGBA(frame: frame, width: width, height: height)
+        let bytes = try renderRGBA(frame: frame, width: width, height: height)
+        try Self.writePixels(bytes, width: width, height: height, to: url, background: background)
+    }
+
+    /// Encode on the renderer's owner thread; GPU waiting, conversion and PNG I/O never block it.
+    @MainActor func writePNGAsync(frame: OceanFrame, width: Int, height: Int, to url: URL) async throws {
+        let (command, output) = try readbackCommand(frame: frame, width: width, height: height)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            command.addCompletedHandler { completed in
+                if let error = completed.error { continuation.resume(throwing: error); return }
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        let bytes = Self.readPixels(output, width: width, height: height)
+                        try Self.writePixels(bytes, width: width, height: height, to: url, background: nil)
+                        continuation.resume()
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            command.commit()
+        }
+    }
+
+    private static func writePixels(_ input: [UInt8], width: Int, height: Int, to url: URL, background: SIMD3<Float>?) throws {
+        var bytes = input
         for index in stride(from: 0, to: bytes.count, by: 4) {
             let alpha = Float(bytes[index + 3]) / 255
             for channel in 0..<3 {

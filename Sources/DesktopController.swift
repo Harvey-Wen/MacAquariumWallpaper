@@ -17,7 +17,7 @@ final class TransparentMetalView: MTKView {
     let renderer: OceanRenderer
     let simulation: OceanSimulation
     let input: DesktopInput
-    var enabled = true { didSet { updateBackdrop(); updateActivity() } }
+    var enabled = true { didSet { updateActivity(); updateBackdrop() } }
     var paused = false { didSet { updateActivity() } }
     var interactive = true { didSet { updateActivity() } }
     var weather: PondWeather {
@@ -45,6 +45,10 @@ final class TransparentMetalView: MTKView {
     private var previousTime = ProcessInfo.processInfo.systemUptime
     private var lastDiagnostic = 0.0
     private var displayID: CGDirectDisplayID = 0
+    private var backdropRevision = 0
+    private var backdropTask: Task<Void, Never>?
+    private var stopping = false
+    private var stopCompletion: (() -> Void)?
 
     var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     var animating: Bool { enabled && !paused && !sleeping && !locked && !reducedMotion }
@@ -133,7 +137,7 @@ final class TransparentMetalView: MTKView {
         observers.append((center, observer))
     }
 
-    func start() { updateBackdrop(); updateActivity() }
+    func start() { updateActivity(); updateBackdrop() }
 
     func addCustomFish(_ drawing: FishDrawing) throws {
         guard !simulation.fish.contains(where: { $0.customAppearanceID == drawing.id }) else { return }
@@ -142,7 +146,7 @@ final class TransparentMetalView: MTKView {
         catch { renderer.removeDrawing(id: drawing.id); throw error }
         simulation.addCustomFish(appearanceID: drawing.id, name: drawing.name)
         if !enabled { enabled = true }
-        else { updateBackdrop(); render(); writeDiagnostics() }
+        else { render(); writeDiagnostics(); updateBackdrop() }
         onFishChanged?()
     }
 
@@ -180,25 +184,44 @@ final class TransparentMetalView: MTKView {
     }
 
     private func updateBackdrop() {
-        do {
-            if enabled, let screen = NSScreen.screens.first {
-                let pixels = screen.convertRectToBacking(screen.frame).size
-                let fishIDs = simulation.fish.map { $0.identity.storageKey }.sorted().joined(separator: ",")
-                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(fishIDs)"
-                try backdrop.apply(screen: screen, key: key) { url in
-                    var frame = simulation.frame(waterStrength: 0.45)
-                    frame.weatherAmount = weather == .rainy ? 1 : 0
-                    frame.atmosphere = weather.atmosphere
-                    try renderer.writePNG(frame: frame, width: Int(pixels.width), height: Int(pixels.height), to: url)
+        backdropRevision += 1
+        guard backdropTask == nil else { return }
+        backdropTask = Task { @MainActor in
+            // Coalesce changes made by the same UI action before capturing the scene.
+            await Task.yield()
+            while true {
+                let revision = backdropRevision
+                do {
+                    if enabled && !stopping, let screen = NSScreen.screens.first {
+                        let pixels = screen.convertRectToBacking(screen.frame).size
+                        let fishIDs = simulation.fish.map { $0.identity.storageKey }.sorted().joined(separator: ",")
+                        let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(fishIDs)"
+                        var frame = simulation.frame(waterStrength: 0.45)
+                        frame.weatherAmount = weather == .rainy ? 1 : 0
+                        frame.atmosphere = weather.atmosphere
+                        try await backdrop.apply(screen: screen, key: key,
+                            isCurrent: { self.backdropRevision == revision && self.enabled && !self.stopping }) { url in
+                            try await self.renderer.writePNGAsync(frame: frame, width: Int(pixels.width), height: Int(pixels.height), to: url)
+                        }
+                    } else {
+                        try await backdrop.restoreAll()
+                    }
+                    // A no-op restoration is not evidence that an earlier failure recovered.
+                    if enabled && !stopping && revision == backdropRevision { backdropError = nil }
+                } catch {
+                    backdropError = error.localizedDescription
+                    NSLog("池塘桌面背景：%@", error.localizedDescription)
                 }
-            } else if !enabled {
-                try backdrop.restoreAll()
+                writeDiagnostics()
+                if revision == backdropRevision { break }
             }
-            backdropError = nil
-        } catch {
-            backdropError = error.localizedDescription
-            NSLog("池塘桌面背景：%@", error.localizedDescription)
+            backdropTask = nil
+            if stopping { backdrop.releaseOwnership(); stopCompletion?(); stopCompletion = nil }
         }
+    }
+
+    func waitForBackdrop() async {
+        while let task = backdropTask { await task.value }
     }
 
     private func updateActivity() {
@@ -256,17 +279,24 @@ final class TransparentMetalView: MTKView {
         if enabled && !sleeping && !locked { render() }
     }
 
-    func stop() {
+    func stop(completion: (() -> Void)? = nil) {
+        guard !stopping else {
+            if backdropTask == nil { completion?() }
+            else if let completion { stopCompletion = completion }
+            return
+        }
+        stopping = true
+        stopCompletion = completion
         simulation.resetPointer()
-        do { try backdrop.restoreAll(); backdropError = nil }
-        catch { backdropError = error.localizedDescription; NSLog("池塘桌面背景恢复：%@", error.localizedDescription) }
-        writeDiagnostics()
         timer?.invalidate(); timer = nil
         input.stop()
         for (center, observer) in observers { center.removeObserver(observer) }
         observers.removeAll()
         window.orderOut(nil)
         window.close()
+        // The running export drains first; its revision is now invalid. Restoration
+        // then confirms the original before the application is allowed to terminate.
+        updateBackdrop()
     }
 
     func writeDiagnostics() {
