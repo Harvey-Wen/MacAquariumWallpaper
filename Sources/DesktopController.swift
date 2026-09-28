@@ -272,6 +272,7 @@ final class TransparentMetalView: MTKView {
 
     func writeDiagnostics() {
         guard let diagnosticURL else { return }
+        let frame = simulation.frame(waterStrength: 0.45)
         let dictionary: [String: Any] = [
             "backdropError": backdropError ?? "",
             "status": status, "frames": frameCount, "meanCPUFrameMS": meanFrameMS,
@@ -284,7 +285,10 @@ final class TransparentMetalView: MTKView {
             "defaultFishLoadError": defaultFishError ?? "",
             "motionRipples": simulation.ripples.filter { $0.source == .motion }.count,
             "leaves": simulation.leaves.count, "weather": weather.rawValue,
-            "weatherAmount": simulation.frame(waterStrength: 0.45).weatherAmount,
+            "weatherAmount": frame.weatherAmount,
+            "airborneSnow": frame.precipitation.filter { $0.kind == .snow }.count,
+            "airborneRain": frame.precipitation.filter { $0.kind == .rain }.count,
+            "surfaceSnow": frame.surfaceSnow.count,
             "clicks": input.clickCount,
             "drags": input.dragCount, "rejectedClicks": input.rejectedCount,
             "geometryValid": input.geometry.valid, "blockedWindows": input.geometry.blockingRects.count,

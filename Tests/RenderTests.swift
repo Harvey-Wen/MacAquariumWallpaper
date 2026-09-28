@@ -7,9 +7,14 @@ import ImageIO
         Double(zip(a,b).reduce(0) { $0 + abs(Int($1.0)-Int($1.1)) }) / Double(a.count * 255)
     }
     static func weatherModes(renderer: OceanRenderer, sunny: OceanFrame, output: URL) throws {
+        let snowfall = OceanSimulation(size: sunny.size, seed: 42)
+        snowfall.weather = .snowy
+        for _ in 0..<1050 { snowfall.update(deltaTime: 1.0/30) }
+        let snowFrame = snowfall.frame(waterStrength: 0.45)
         var samples: [[UInt8]] = []
         for weather in [PondWeather.sunny, .snowy, .overcast, .cloudy] {
             var frame = sunny; frame.atmosphere = weather.atmosphere
+            if weather == .snowy { frame.precipitation = snowFrame.precipitation; frame.surfaceSnow = snowFrame.surfaceSnow }
             let bytes = try renderer.renderRGBA(frame: frame,width: 800,height: 500)
             precondition(stride(from: 3,to: bytes.count,by: 4).allSatisfy { bytes[$0] == 255 })
             for previous in samples { precondition(delta(previous,bytes) > 0.003, "Weather must be visibly distinct") }
@@ -33,11 +38,13 @@ import ImageIO
         still.time = cloudPeriod + 0.0001
         let cloudAfter = try renderer.renderRGBA(frame: still,width: 800,height: 500)
         precondition(delta(cloudBefore,cloudAfter) < 0.00001, "Cloud phase wraps continuously")
-        still.atmosphere = PondWeather.snowy.atmosphere; still.time = 0
+        still.atmosphere = PondWeather.snowy.atmosphere
+        still.precipitation = snowFrame.precipitation
         let snow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
         let pausedSnow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
         precondition(snow == pausedSnow, "Pause freezes snow exactly")
-        still.time = 1.0/30
+        snowfall.update(deltaTime: 1.0/30)
+        still.precipitation = snowfall.frame(waterStrength: 0.45).precipitation
         let snowLater = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
         var foliage = 0, water = 0
         for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
@@ -48,16 +55,52 @@ import ImageIO
             }
         }}
         precondition(foliage > 100 && water > 100, "Snow moves across branches and water")
-        still.time = 256 - 0.0001
-        let snowBefore = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
-        still.time = 256 + 0.0001
-        let snowAfter = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
-        precondition(delta(snowBefore,snowAfter) < delta(snow,snowLater)*0.05, "Snow does not jump when its clock wraps")
         still.time = 256 * 10000
         let longSnow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
-        precondition(snow == longSnow, "Snow retains precision after weeks")
+        precondition(snowLater == longSnow, "Snow positions do not depend on a wrapping global shader clock")
+        var deposited = still; deposited.precipitation = []; deposited.surfaceSnow = snowFrame.surfaceSnow
+        let deposits = try renderer.renderRGBA(frame: deposited,width: 1600,height: 1000)
+        var melted = deposited; melted.surfaceSnow = []
+        let noDeposits = try renderer.renderRGBA(frame: melted,width: 1600,height: 1000)
+        precondition(delta(deposits,noDeposits) > 0.0001, "Accumulated snow visibly rests on the water")
+        for y in stride(from: 0,to: 1000,by: 3) { for x in stride(from: 0,to: 1600,by: 3) {
+            if PondGeometry.signedDistance(at: SIMD2(Float(x),1000-Float(y)),size: still.size) < -5 {
+                let i=(y*1600+x)*4
+                precondition(Array(deposits[i..<i+4]) == Array(noDeposits[i..<i+4]), "Surface snow excludes branches")
+            }
+        }}
+        let beforeSwitch = snowfall.frame(waterStrength: 0.45)
+        let switchPixels = try renderer.renderRGBA(frame: beforeSwitch,width: 1600,height: 1000)
+        snowfall.weather = .rainy
+        let selectedPixels = try renderer.renderRGBA(frame: snowfall.frame(waterStrength: 0.45),width: 1600,height: 1000)
+        precondition(switchPixels == selectedPixels, "Weather choice never replaces visible particles immediately")
+        for tick in 0..<45 {
+            snowfall.update(deltaTime: 1.0/30)
+            if tick == 0 || tick == 14 || tick == 44 {
+                try renderer.writePNG(frame: snowfall.frame(waterStrength: 0.45),width: 1600,height: 1000,
+                    to: output.appendingPathComponent("pond-snow-to-rain-\(tick).png"))
+            }
+        }
+        let mixed = snowfall.frame(waterStrength: 0.45)
+        precondition(mixed.precipitation.contains { $0.kind == .snow } && mixed.precipitation.contains { $0.kind == .rain })
+        if CommandLine.arguments.contains("--preview") {
+            let url=output.appendingPathComponent("pond-snow-to-rain.gif")
+            let destination=CGImageDestinationCreateWithURL(url as CFURL,"com.compuserve.gif" as CFString,90,nil)!
+            CGImageDestinationSetProperties(destination,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFLoopCount:0]] as CFDictionary)
+            let preview = OceanSimulation(size: SIMD2(1600,1000),seed: 42); preview.weather = .snowy
+            for _ in 0..<1050 { preview.update(deltaTime: 1.0/30) }
+            for index in 0..<90 {
+                if index == 30 { preview.weather = .rainy }
+                preview.update(deltaTime: 1.0/15)
+                let bytes=try renderer.renderRGBA(frame: preview.frame(waterStrength: 0.45),width: 960,height: 600)
+                let image=CGImage(width:960,height:600,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:3840,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),provider:CGDataProvider(data:Data(bytes) as CFData)!,decode:nil,shouldInterpolate:true,intent:.defaultIntent)!
+                CGImageDestinationAddImage(destination,image,[kCGImagePropertyGIFDictionary:[kCGImagePropertyGIFDelayTime:0.067]] as CFDictionary)
+            }
+            precondition(CGImageDestinationFinalize(destination))
+        }
         for weather in [PondWeather.snowy, .overcast, .cloudy] {
             var frame = sunny; frame.size = SIMD2(1512,982); frame.atmosphere = weather.atmosphere
+            if weather == .snowy { frame.precipitation = snowFrame.precipitation; frame.surfaceSnow = snowFrame.surfaceSnow }
             var timings: [Double] = []
             for index in 0..<20 {
                 frame.time += 1.0/30
@@ -68,7 +111,7 @@ import ImageIO
             precondition(timings[14] < 1000/30, "New weather fits the GPU frame budget")
             print("GPU \(weather.rawValue) 3024x1964: median \(timings[7]) ms; max \(timings[14]) ms.")
         }
-        print("PASS five-weather visuals, snow over \(foliage) foliage / \(water) water samples, pause, long-running snow and continuous cloud/snow wrap.")
+        print("PASS five-weather visuals, snow over \(foliage) foliage / \(water) water samples, accumulation, smooth rain handoff, pause and long-running snow/cloud motion.")
     }
 
     static func main() throws {
@@ -224,49 +267,21 @@ import ImageIO
         var wet = noFish; wet.weatherAmount = 1
         let wetPixels = try renderer.renderRGBA(frame: wet,width: 1600,height: 1000)
         precondition(delta(plain,wetPixels)>0.005)
-        // Disable water movement and all visible actors to isolate atmospheric rain.
-        var streaks = noFish; streaks.waterStrength = 0
-        streaks.time = 604800
-        let dryStill = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        streaks.time += 1.0/30
-        let dryLater = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        precondition(dryStill.allSatisfy { $0 == 0 }, "Empty dry frame must remain transparent")
-        precondition(dryStill == dryLater, "Dry weather must have no atmospheric streak motion")
-        streaks.weatherAmount = 1
-        streaks.time = 604800
-        let frozenRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        precondition(frozenRain.contains { $0 != 0 }, "Rain-only frame must render without placeholder actors")
-        let pausedRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        precondition(frozenRain == pausedRain, "Paused frame must freeze rain exactly")
-        streaks.time += 1.0/30
-        let nextRain = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        var landStreaks = 0, waterStreaks = 0
-        for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
-            let i=(y*1600+x)*4
-            if (0..<3).contains(where: { frozenRain[i+$0] != nextRain[i+$0] }) {
-                let d=PondGeometry.signedDistance(at: SIMD2(Float(x)+0.5,999.5-Float(y)),size: streaks.size)
-                if d < -5 { landStreaks += 1 }
-                if d > 5 { waterStreaks += 1 }
-            }
-        }}
-        precondition(landStreaks > 100 && waterStreaks > 100, "Atmospheric rain must move over both foliage and water")
-        var lastRain = nextRain
-        for step in 2...12 {
-            streaks.time = 604800 + Double(step)/30
-            let next = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-            let d = delta(lastRain,next); precondition(d > 0.00001 && d < 0.005); lastRain = next
-        }
-        streaks.time = 604808 - 0.0001
-        let wrapBefore = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        streaks.time = 604808 + 0.0001
-        let wrapAfter = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        precondition(delta(wrapBefore,wrapAfter) < delta(frozenRain,nextRain)*0.1, "Rain period must wrap without a visible reset")
-        streaks.time = 604800
-        let daySeven = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        streaks.time = 0
-        let firstDay = try renderer.renderRGBA(frame: streaks,width: 1600,height: 1000)
-        precondition(daySeven == firstDay, "Rain phase must retain precision at day seven")
-        print("PASS atmospheric rain: \(landStreaks) changed land samples, \(waterStreaks) water samples; dry/paused static, day-seven motion and wrap continuous.")
+        let drops = OceanSimulation(size: noFish.size, seed: 8); drops.weather = .rainy
+        for _ in 0..<180 { drops.update(deltaTime: 1.0/30) }
+        var rainOnly = OceanFrame.empty; rainOnly.size = noFish.size
+        rainOnly.precipitation = drops.frame(waterStrength: 0).precipitation
+        let frozenRain = try renderer.renderRGBA(frame: rainOnly,width: 1600,height: 1000)
+        let pausedRain = try renderer.renderRGBA(frame: rainOnly,width: 1600,height: 1000)
+        precondition(frozenRain.contains { $0 != 0 } && frozenRain == pausedRain, "Particle-only rain renders and pauses exactly")
+        drops.update(deltaTime: 1.0/30)
+        rainOnly.precipitation = drops.frame(waterStrength: 0).precipitation
+        let nextRain = try renderer.renderRGBA(frame: rainOnly,width: 1600,height: 1000)
+        precondition(delta(frozenRain,nextRain)>0.00001, "Individual rain drops move between simulated frames")
+        rainOnly.precipitation = []
+        let dryEmpty = try renderer.renderRGBA(frame: rainOnly,width: 1600,height: 1000)
+        precondition(dryEmpty.allSatisfy { $0 == 0 }, "Drained particle-only frame is transparent")
+        print("PASS independent atmospheric rain particles, frozen snapshots and empty cleanup.")
         // Same leaf over a fish: surface pixels must cover the underwater animal.
         var layers = noFish; layers.waterStrength = 0.45
         let center = SIMD2<Float>(800,500)

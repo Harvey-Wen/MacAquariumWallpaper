@@ -92,59 +92,6 @@ vertex VertexOut effectVertex(uint id [[vertex_id]], constant EffectUniforms &u 
     VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1);o.point=p;o.local=float3(q,0);o.normal=0;o.detail=0;return o;
 }
 fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
-    if(u.style.x>5.5) {
-        float alpha=0;
-        float t=u.style.y;
-        float wind=sin(t*0.0245436926)*1.8;
-        for(int layer=0;layer<3;layer++) {
-            float spacing=64+layer*44;
-            float speed=layer==0 ? 0.25 : (layer==1 ? 0.5 : 1.0);
-            float2 grid=in.point/spacing+float2(wind,t*speed);
-            float2 cell=floor(grid), local=fract(grid);
-            // Periodic seed lattice matches every layer's 256-second translation.
-            float2 wrapped=cell-floor(cell/64)*64;
-            float seed=hash(wrapped+float2(layer*71,layer*113));
-            float other=hash(wrapped+float2(41+layer*17,93));
-            float sway=sin(t*0.7853981634+seed*6.2831853)*0.13;
-            float2 center=float2(0.28+seed*0.44+sway,0.24+other*0.52);
-            float2 d=(local-center)*spacing;
-            float radius=0.75+layer*0.85+other*0.5;
-            d.x*=0.85+seed*0.35;
-            float flake=exp(-dot(d,d)/(radius*radius));
-            alpha+=flake*(0.48+layer*0.16);
-        }
-        alpha=min(0.94,alpha)*u.style.z;
-        return float4(float3(0.91,0.96,1.0)*alpha,alpha);
-    }
-    if(u.style.x>3.5) {
-        // Independently phased sparse drops at three depths. Eight-second wrapping is
-        // reduced in Double on the CPU; each local reset disappears through a fade.
-        float alpha=0;
-        for(int layer=0;layer<3;layer++) {
-            float spacing=40+layer*36;
-            float2 grid=in.point/spacing;
-            float2 cell=floor(grid), local=fract(grid)*spacing;
-            float seed=hash(cell+float2(layer*71,layer*113));
-            float other=hash(cell+float2(41+layer*17,93));
-            float cycles=10+floor(other*12)+layer*6;
-            float t=fract(u.style.y*cycles/8+seed);
-            float fade=smoothstep(0.0,0.13,t)*(1-smoothstep(0.78,1.0,t));
-            float wind=0.12+0.12*sin(u.style.y*0.785398);
-            float2 direction=normalize(float2(wind+(other-0.5)*0.5,-1));
-            float2 center=float2(spacing*(0.25+other*0.5),spacing*(0.85-0.70*t));
-            center.x+=direction.x*(t-0.5)*spacing*0.5;
-            float2 d=local-center;
-            float across=dot(d,float2(-direction.y,direction.x));
-            float along=dot(d,direction);
-            float width=0.48+layer*0.30;
-            float length=1.5+layer*1.8+seed*seed*(2+layer*2);
-            float drop=exp(-across*across/(width*width)-along*along/(length*length));
-            alpha+=drop*fade*(0.24+layer*0.07+other*0.16);
-        }
-        alpha*=u.style.z;
-        return float4(float3(0.70,0.84,0.78)*alpha,alpha);
-    }
-
     float2 uv=imageUV(in.point,u.viewport.xy); float water=maskAt(in.point,u.viewport.xy,mask);
     float phase=u.viewport.z, phase2=u.viewport.w;
     float2 wave=float2(sin(uv.y*67+sin(uv.x*35+phase2)*1.4+phase),cos(uv.x*59+sin(uv.y*29+phase)*1.3+phase2));
@@ -181,6 +128,40 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
     color=mix(color,color*0.65+float3(0.07,0.10,0.015),vein*0.60);
     color*=0.79+0.21*smoothstep(0.0,0.09,edge-r);
     color=weatherLight(color,in.point,u);
+    return float4(color*alpha,alpha);
+}
+
+// Small instanced sprites carry independent simulation positions, not a screen lattice.
+struct PrecipitationUniforms { float4 placement, style; };
+vertex VertexOut precipitationVertex(uint id [[vertex_id]], uint instance [[instance_id]],
+    const device PrecipitationUniforms *particles [[buffer(0)]], constant EffectUniforms &u [[buffer(1)]]) {
+    const float2 quad[6]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,-1),float2(1,1),float2(-1,1)};
+    PrecipitationUniforms p=particles[instance];
+    float2 q=quad[id], offset=q*p.placement.zw;
+    float c=cos(p.style.w), s=sin(p.style.w);
+    float2 point=p.placement.xy+float2(c*offset.x-s*offset.y,s*offset.x+c*offset.y);
+    VertexOut o; o.position=float4(point/u.viewport.xy*2-1,0,1); o.point=point;
+    o.local=float3(q,0); o.detail=p.style; return o;
+}
+fragment float4 precipitationFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]],
+    texture2d<float> mask [[texture(1)]]) {
+    float2 p=in.local.xy;
+    float opacity=in.detail.x, kind=in.detail.y, seed=in.detail.z;
+    float alpha; float3 color;
+    if(kind<0.5) {
+        alpha=exp(-p.x*p.x*2.8-p.y*p.y*7)*opacity*(1-smoothstep(0.65,1.0,abs(p.x)));
+        color=float3(0.72,0.84,0.81);
+    } else {
+        float angle=atan2(p.y,p.x);
+        float irregular=1+0.045*sin(angle*3+seed)+0.025*cos(angle*5-seed);
+        float r=length(p)*3*irregular;
+        alpha=(1-smoothstep(0.15,1.35,r))*opacity;
+        color=float3(0.94,0.97,1);
+        if(kind>1.5) {
+            alpha*=maskAt(in.point,u.viewport.xy,mask);
+            color=weatherLight(float3(0.88,0.94,0.96),in.point,u);
+        }
+    }
     return float4(color*alpha,alpha);
 }
 

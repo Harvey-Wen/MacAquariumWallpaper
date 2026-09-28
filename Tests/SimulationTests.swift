@@ -9,6 +9,9 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) thr
 @main
 private enum SimulationTests {
     static func main() throws {
+        try snowIsRandomAndTransitionsFromTop()
+        try snowSettlesMeltsAndClearsLocally()
+        try precipitationResizesAndStaysBounded()
         try pointerAvoidanceDoesNotWaitForWaves()
         try pointerSweepAffectsFishAlongItsPath()
         try pointerStillnessAndReentryKeepFishCalm()
@@ -32,7 +35,83 @@ private enum SimulationTests {
         try frameRateEquivalence()
         try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 23 passed")
+        print("SimulationTests: 26 passed")
+    }
+
+    private static func snowIsRandomAndTransitionsFromTop() throws {
+        let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 78)
+        sim.weather = .snowy
+        for _ in 0..<30 { sim.update(deltaTime: 1 / 30) }
+        let first = sim.frame(waterStrength: 0.45).precipitation
+        try expect(first.count > 15 && first.allSatisfy { $0.kind == .snow && $0.position.y > 880 }, "new snow enters from above, never appears across the whole screen")
+        try expect(Set(first.map { Int($0.velocity.y) }).count > 15 && Set(first.map { Int($0.frequency * 100) }).count > 15,
+                   "flakes have independent speeds and sway rather than shared grid layers")
+        let xs = first.map { $0.origin.x }.sorted()
+        let gaps = zip(xs, xs.dropFirst()).map { $1 - $0 }
+        try expect(gaps.min()! < 10 && gaps.max()! > 80, "random origins allow clusters and gaps")
+        for _ in 0..<450 { sim.update(deltaTime: 1 / 30) }
+        let before = sim.frame(waterStrength: 0.45)
+        try expect(before.precipitation.contains { $0.position.y < 400 }, "old snow reaches the lower pond")
+        sim.weather = .rainy
+        try expect(sim.frame(waterStrength: 0.45).precipitation == before.precipitation, "weather selection preserves every in-flight flake without advancing paused state")
+        sim.update(deltaTime: 1 / 30)
+        let mixed = sim.frame(waterStrength: 0.45).precipitation
+        for flake in before.precipitation where flake.duration - flake.age > 0.1 {
+            let next = mixed.first { $0.id == flake.id }
+            try expect(next != nil && next!.opacity == flake.opacity && simd_distance(next!.position,flake.position) < 6,
+                       "existing snow continues its own path and opacity during the rain switch")
+        }
+        try expect(mixed.contains { $0.kind == .rain } && mixed.filter { $0.kind == .rain }.allSatisfy { $0.position.y > 970 },
+                   "new rain arrives only at the top while old snow continues below")
+        for weather in [PondWeather.cloudy, .snowy, .overcast, .rainy, .sunny] {
+            let old = sim.frame(waterStrength: 0.45).precipitation
+            sim.weather = weather
+            try expect(sim.frame(waterStrength: 0.45).precipitation == old, "rapid switching never clears in-flight weather")
+            sim.update(deltaTime: 0.1)
+        }
+        for _ in 0..<1500 { sim.update(deltaTime: 1 / 30) }
+        try expect(sim.frame(waterStrength: 0.45).precipitation.isEmpty, "dry weather eventually drains all precipitation")
+    }
+
+    private static func snowSettlesMeltsAndClearsLocally() throws {
+        let swept = OceanSimulation(size: SIMD2(1600, 1000), seed: 9)
+        let calm = OceanSimulation(size: swept.size, seed: 9)
+        swept.weather = .snowy; calm.weather = .snowy
+        for _ in 0..<900 { swept.update(deltaTime: 1 / 30); calm.update(deltaTime: 1 / 30) }
+        let snow = swept.frame(waterStrength: 0.45).surfaceSnow
+        try expect(snow.count > 100 && snow.allSatisfy { PondGeometry.contains($0.position, size: swept.size) }, "snow gradually accumulates only on water")
+        let target = snow.first { $0.age < $0.lifetime - 2 && PondGeometry.contains($0.position,size: swept.size,margin: 60) }!
+        swept.trackPointer(target.position - SIMD2(25,0))
+        swept.trackPointer(target.position + SIMD2(25,0))
+        let marked = swept.frame(waterStrength: 0.45).surfaceSnow
+        try expect(marked.first { $0.id == target.id }!.clearing, "pointer sweep melts snow along the segment")
+        try expect(marked.filter { $0.clearing }.allSatisfy { simd_distance($0.position,target.position) < 65 }, "clearing stays local")
+        for _ in 0..<45 { swept.update(deltaTime: 1 / 30); calm.update(deltaTime: 1 / 30) }
+        try expect(!swept.frame(waterStrength: 0.45).surfaceSnow.contains { $0.id == target.id }
+                   && calm.frame(waterStrength: 0.45).surfaceSnow.contains { $0.id == target.id }, "swept patch fades out sooner than untouched snow")
+        let untouched = calm.frame(waterStrength: 0.45).surfaceSnow
+        calm.trackPointer(target.position); calm.trackPointer(target.position); calm.trackPointer(nil)
+        calm.trackPointer(target.position + SIMD2(200,0))
+        calm.trackPointer(target.position - SIMD2(200,0))
+        try expect(calm.frame(waterStrength: 0.45).surfaceSnow == untouched, "stillness, re-entry and pointer jumps do not sweep snow")
+        swept.weather = .sunny
+        for _ in 0..<2100 { swept.update(deltaTime: 1 / 30) }
+        try expect(swept.frame(waterStrength: 0.45).surfaceSnow.isEmpty, "all old snow melts naturally after snowfall stops")
+    }
+
+    private static func precipitationResizesAndStaysBounded() throws {
+        let sim = OceanSimulation(size: SIMD2(1600,1000), seed: 91)
+        sim.weather = .snowy
+        for _ in 0..<1800 {
+            sim.update(deltaTime: 1 / 30)
+            let frame = sim.frame(waterStrength: 0.45)
+            try expect(frame.precipitation.count <= 1600 && frame.surfaceSnow.count <= 1200, "long snow has bounded particle and surface counts")
+        }
+        let before = sim.frame(waterStrength: 0.45)
+        sim.resize(to: SIMD2(1920,1200))
+        let after = sim.frame(waterStrength: 0.45)
+        try expect(zip(before.precipitation,after.precipitation).allSatisfy { simd_distance($0.position * 1.2,$1.position) < 0.01 }, "resize maps live precipitation without restarting it")
+        try expect(zip(before.surfaceSnow,after.surfaceSnow).allSatisfy { simd_distance($0.position * 1.2,$1.position) < 0.01 }, "resize maps accumulated snow")
     }
 
     private static func weatherModesTransitionAndStayDry() throws {
@@ -121,9 +200,10 @@ private enum SimulationTests {
         try expect(simd_distance(rotatedForce,SIMD2(-behind.y,behind.x))<0.0001, "leaf force rotates with the same travel axis as visible waves")
         let sim = OceanSimulation(size: SIMD2(1600,1000),seed: 7)
         sim.weather = .rainy
+        for _ in 0..<180 { sim.update(deltaTime: 1/30) }
         sim.click(at: SIMD2(800,500))
         for _ in 0..<60 { sim.update(deltaTime: 1/30) }
-        try expect(sim.ripples.filter { $0.source == .rain }.count >= 50, "steady rain sustains roughly forty impacts per second")
+        try expect(sim.ripples.filter { $0.source == .rain }.count >= 35, "random steady rain sustains dense water impacts within its bounded budget")
         try expect(sim.ripples.filter { $0.source == .click }.count == 2, "dense rain must not evict active click waves")
         try expect(sim.ripples.count <= 96, "rain and interaction retain finite independent budgets")
     }
@@ -307,40 +387,17 @@ private enum SimulationTests {
     }
 
     private static func rainPreservesClickPanicAndFallsOffLocally() throws {
-        var selected: (seed: UInt64, near: Int, far: Int, point: SIMD2<Float>)?
-        for seed in UInt64(1)...80 {
-            let probe = OceanSimulation(size: SIMD2(1600, 1000), seed: seed)
-            probe.weather = .rainy
-            for _ in 0..<4 { probe.update(deltaTime: 1 / 30) }
-            guard let point = probe.ripples.first(where: { $0.source == .rain })?.position,
-                  let near = probe.fish.firstIndex(where: { simd_distance($0.position, point) < 45 }),
-                  let far = probe.fish.firstIndex(where: { simd_distance($0.position, point) > 180 }) else { continue }
-            selected = (seed, near, far, point)
-            break
-        }
-        guard let selected else { throw TestFailure(description: "expected a seeded rain impact near a koi") }
-
-        let rainy = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
-        let dry = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
-        let overlap = OceanSimulation(size: SIMD2(1600, 1000), seed: selected.seed)
-        rainy.weather = .rainy
-        overlap.weather = .rainy
-        for _ in 0..<3 {
-            rainy.update(deltaTime: 1 / 30)
-            dry.update(deltaTime: 1 / 30)
-            overlap.update(deltaTime: 1 / 30)
-        }
-        overlap.click(at: overlap.fish[selected.near].position)
-        try expect(overlap.fish[selected.near].panic > 0.9, "click creates strong panic before rain")
-        rainy.update(deltaTime: 1 / 30)
-        dry.update(deltaTime: 1 / 30)
-        overlap.update(deltaTime: 1 / 30)
-
-        try expect(rainy.fish[selected.near].panic > dry.fish[selected.near].panic, "near koi reacts to rain")
-        try expect(rainy.fish[selected.near].panic < 0.28, "rain response stays mild")
-        try expect(rainy.fish[selected.far].panic == dry.fish[selected.far].panic, "distant koi has no rain panic")
-        try expect(simd_distance(rainy.fish[selected.far].velocity, dry.fish[selected.far].velocity) < 0.0001, "distant koi has no rain impulse")
-        try expect(overlap.fish[selected.near].panic > 0.9, "rain must not reduce stronger click panic")
+        let rainy = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+        let dry = OceanSimulation(size: rainy.size, seed: 7)
+        let overlap = OceanSimulation(size: rainy.size, seed: 7)
+        let point = rainy.fish[0].position + SIMD2(10,0)
+        let far = rainy.fish.firstIndex { simd_distance($0.position,point) > 180 }!
+        overlap.click(at: overlap.fish[0].position)
+        rainy.rainImpact(at: point, age: 0)
+        overlap.rainImpact(at: point, age: 0)
+        try expect(rainy.fish[0].panic > dry.fish[0].panic && rainy.fish[0].panic < 0.28, "landing rain creates only mild local panic")
+        try expect(rainy.fish[far].panic == dry.fish[far].panic && rainy.fish[far].velocity == dry.fish[far].velocity, "distant koi has no rain impulse")
+        try expect(overlap.fish[0].panic > 0.9, "rain must not reduce stronger click panic")
     }
 
     private static func leavesLandFloatMoveAndExpire() throws {
@@ -463,7 +520,7 @@ private enum SimulationTests {
         let exactRain = exact.ripples.filter { $0.source == .rain }
         let jitteredRain = jittered.ripples.filter { $0.source == .rain }
         try expect(exactRain.count == jitteredRain.count, "jitter does not accelerate rain impacts")
-        try expect(exactRain.map(\.position) == jitteredRain.map(\.position), "jitter preserves seeded rain positions")
+        try expect(Set(exactRain.map(\.position)) == Set(jitteredRain.map(\.position)), "jitter preserves seeded landing positions regardless of simultaneous landing order")
     }
 
     private static func frameSnapshot() throws {

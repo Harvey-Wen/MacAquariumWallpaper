@@ -91,6 +91,39 @@ struct PondLeaf {
     var opacity: Float
 }
 
+enum PrecipitationKind: Int { case rain, snow }
+
+struct FallingPrecipitation: Equatable {
+    var id: Int
+    var kind: PrecipitationKind
+    var origin: SIMD2<Float>
+    var velocity: SIMD2<Float>
+    var age: Float
+    var landingY: Float
+    var radius: Float
+    var opacity: Float
+    var sway: Float
+    var frequency: Float
+    var phase: Float
+
+    var duration: Float { (origin.y - landingY) / -velocity.y }
+    var position: SIMD2<Float> { position(at: age) }
+    func position(at age: Float) -> SIMD2<Float> {
+        origin + velocity * age + SIMD2(sway * (sin(age * frequency + phase) - sin(phase)), 0)
+    }
+}
+
+struct SurfaceSnow: Equatable {
+    var id: Int
+    var position: SIMD2<Float>
+    var radius: Float
+    var age: Float
+    var lifetime: Float
+    var opacity: Float
+    var phase: Float
+    var clearing = false
+}
+
 struct OceanFrame {
     var size: SIMD2<Float>
     var time: Double
@@ -100,6 +133,8 @@ struct OceanFrame {
     var leaves: [PondLeaf] = []
     var weatherAmount: Float = 0
     var atmosphere: SIMD3<Float> = .zero
+    var precipitation: [FallingPrecipitation] = []
+    var surfaceSnow: [SurfaceSnow] = []
 
     static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], waterStrength: 0)
 }
