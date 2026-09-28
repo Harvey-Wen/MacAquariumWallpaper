@@ -19,6 +19,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private let onAdd: (FishDrawing) throws -> Void
     private(set) var drawing = FishDrawing(id: UUID(), strokes: [])
     private(set) var canvas: FishDrawingCanvas!
+    private(set) var nameField: NSTextField!
     private(set) var colorWell: NSColorWell!
     private(set) var baseColorWell: NSColorWell!
     private(set) var widthSlider: NSSlider!
@@ -28,12 +29,13 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private(set) var cancelButton: NSButton!
     private(set) var addButton: NSButton!
     private(set) var paletteButtons: [FishPaletteButton] = []
+    private(set) var basePaletteButtons: [FishPaletteButton] = []
     private var selectedColor = NSColor.systemRed
     private var erasing = false
 
     init(onAdd: @escaping (FishDrawing) throws -> Void) {
         self.onAdd = onAdd
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                               styleMask: [.titled, .closable, .miniaturizable],
                               backing: .buffered, defer: false)
         window.title = "画一条锦鲤"
@@ -66,6 +68,17 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         heading.alignment = .leading
         heading.spacing = 5
 
+        let nameLabel = NSTextField(labelWithString: "名字")
+        nameLabel.font = .systemFont(ofSize: 12)
+        nameField = NSTextField(string: "")
+        nameField.placeholderString = "给它起个名字（选填）"
+        nameField.setAccessibilityLabel("鱼的名字")
+        nameField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        let nameTools = NSStackView(views: [nameLabel, nameField!])
+        nameTools.orientation = .horizontal
+        nameTools.alignment = .centerY
+        nameTools.spacing = 10
+
         canvas = FishDrawingCanvas(frame: .zero)
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.setAccessibilityLabel("锦鲤绘画画布")
@@ -81,31 +94,19 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         }
         canvas.strokes = drawing.strokes
 
-        let palette = NSStackView()
-        palette.orientation = .horizontal
-        palette.spacing = 7
-        let colors: [NSColor] = [.systemRed, .systemOrange, .systemYellow, .systemBlue, .black]
-        let names = ["红色", "橙色", "黄色", "蓝色", "黑色"]
-        for (index, color) in colors.enumerated() {
-            let button = FishPaletteButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
-            button.title = ""
-            button.isBordered = false
-            button.swatchColor = color
-            button.isSelected = index == 0
-            button.tag = index
-            button.target = self
-            button.action = #selector(selectPalette(_:))
-            button.setAccessibilityLabel(names[index])
-            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
-            palette.addArrangedSubview(button)
-            paletteButtons.append(button)
-        }
+        let (palette, brushButtons) = makePalette([
+            ("红色", .systemRed), ("橙色", .systemOrange), ("黄色", .systemYellow),
+            ("蓝色", .systemBlue), ("黑色", .black), ("白色", .white),
+            ("绿色", .systemGreen), ("青色", .systemTeal), ("紫色", .systemPurple),
+            ("粉色", .systemPink), ("棕色", .systemBrown), ("灰色", .systemGray)
+        ], label: "画笔", action: #selector(selectPalette(_:)))
+        paletteButtons = brushButtons
         colorWell = NSColorWell(frame: NSRect(x: 0, y: 0, width: 40, height: 28))
         colorWell.color = selectedColor
         colorWell.target = self
         colorWell.action = #selector(selectCustomColor(_:))
         colorWell.setAccessibilityLabel("画笔颜色")
+        colorWell.toolTip = "自选画笔颜色"
         palette.addArrangedSubview(colorWell)
 
         widthSlider = NSSlider(value: 0.025, minValue: 0.008, maxValue: 0.075, target: self, action: nil)
@@ -121,9 +122,13 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         undoButton.keyEquivalent = "z"
         undoButton.keyEquivalentModifierMask = .command
         clearButton = makeButton("清空", action: #selector(clear(_:)))
-        let brushLabel = NSTextField(labelWithString: "画笔")
+        let brushLabel = NSTextField(labelWithString: "画笔颜色")
         brushLabel.font = .systemFont(ofSize: 12)
-        let tools = NSStackView(views: [brushLabel, palette, widthLabel, widthSlider, eraseButton, undoButton, clearButton])
+        let brushTools = NSStackView(views: [brushLabel, palette])
+        brushTools.orientation = .horizontal
+        brushTools.alignment = .centerY
+        brushTools.spacing = 12
+        let tools = NSStackView(views: [widthLabel, widthSlider, eraseButton, undoButton, clearButton])
         tools.orientation = .horizontal
         tools.alignment = .centerY
         tools.spacing = 12
@@ -143,32 +148,66 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         baseColorWell.target = self
         baseColorWell.action = #selector(selectBaseColor(_:))
         baseColorWell.setAccessibilityLabel("鱼身底色")
+        baseColorWell.toolTip = "自选鱼身底色"
+        let (basePalette, bodyButtons) = makePalette([
+            ("白色", .white), ("黄色", .systemYellow), ("橙色", .systemOrange),
+            ("红色", .systemRed), ("粉色", .systemPink), ("绿色", .systemGreen),
+            ("蓝色", .systemBlue), ("黑色", .black)
+        ], label: "底色", action: #selector(selectBasePalette(_:)))
+        basePaletteButtons = bodyButtons
+        basePalette.addArrangedSubview(baseColorWell)
         let baseLabel = NSTextField(labelWithString: "鱼身底色")
         baseLabel.font = .systemFont(ofSize: 12)
-        let baseTools = NSStackView(views: [baseLabel, baseColorWell!])
+        let baseTools = NSStackView(views: [baseLabel, basePalette])
         baseTools.orientation = .horizontal
         baseTools.alignment = .centerY
-        baseTools.spacing = 8
+        baseTools.spacing = 12
 
-        for view in [heading, canvas!, tools, baseTools, footer] {
+        for view in [heading, nameTools, canvas!, brushTools, tools, baseTools, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         NSLayoutConstraint.activate([
             heading.topAnchor.constraint(equalTo: root.topAnchor, constant: 22),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+            nameTools.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
+            nameTools.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
             canvas.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 17),
             canvas.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
             canvas.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
             canvas.heightAnchor.constraint(equalToConstant: 338),
-            tools.topAnchor.constraint(equalTo: canvas.bottomAnchor, constant: 15),
+            brushTools.topAnchor.constraint(equalTo: canvas.bottomAnchor, constant: 15),
+            brushTools.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
             tools.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
+            tools.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             baseTools.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
-            baseTools.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            baseTools.topAnchor.constraint(equalTo: brushTools.bottomAnchor, constant: 8),
             footer.trailingAnchor.constraint(equalTo: canvas.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -19)
         ])
         updateButtons()
+    }
+
+    private func makePalette(_ colors: [(String, NSColor)], label: String, action: Selector) -> (NSStackView, [FishPaletteButton]) {
+        let palette = NSStackView()
+        palette.orientation = .horizontal
+        palette.spacing = 7
+        let buttons = colors.enumerated().map { index, entry in
+            let button = FishPaletteButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+            button.title = ""
+            button.isBordered = false
+            button.swatchColor = entry.1
+            button.isSelected = index == 0
+            button.target = self
+            button.action = action
+            button.setAccessibilityLabel("\(label)：\(entry.0)")
+            button.toolTip = entry.0
+            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            palette.addArrangedSubview(button)
+            return button
+        }
+        return (palette, buttons)
     }
 
     private func makeButton(_ title: String, action: Selector) -> NSButton {
@@ -177,14 +216,13 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         return button
     }
 
-    @objc private func selectPalette(_ sender: NSButton) {
-        let colors: [NSColor] = [.systemRed, .systemOrange, .systemYellow, .systemBlue, .black]
-        selectedColor = colors[sender.tag]
+    @objc private func selectPalette(_ sender: FishPaletteButton) {
+        selectedColor = sender.swatchColor
         colorWell.color = selectedColor
         erasing = false
         updateButtons()
-        for (index, button) in paletteButtons.enumerated() {
-            button.isSelected = index == sender.tag
+        for button in paletteButtons {
+            button.isSelected = button === sender
         }
     }
 
@@ -201,6 +239,15 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         guard let color = sender.color.usingColorSpace(.deviceRGB) else { return }
         drawing.baseColor = FishColor(red: Float(color.redComponent), green: Float(color.greenComponent), blue: Float(color.blueComponent))
         canvas.baseColor = drawing.resolvedBaseColor
+        for button in basePaletteButtons {
+            button.isSelected = false
+        }
+    }
+
+    @objc private func selectBasePalette(_ sender: FishPaletteButton) {
+        baseColorWell.color = sender.swatchColor
+        selectBaseColor(baseColorWell)
+        sender.isSelected = true
     }
 
     @objc private func toggleEraser(_ sender: Any?) {
@@ -225,6 +272,9 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     @objc private func cancel(_ sender: Any?) { window?.close() }
 
     @objc private func addToPond(_ sender: Any?) {
+        window?.makeFirstResponder(nil)
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        drawing.name = name.isEmpty ? nil : name
         do {
             try onAdd(drawing)
             window?.close()
@@ -243,7 +293,11 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         drawing = FishDrawing(id: UUID(), strokes: [])
+        nameField.stringValue = ""
         baseColorWell.color = .white
+        for (index, button) in basePaletteButtons.enumerated() {
+            button.isSelected = index == 0
+        }
         canvas.baseColor = drawing.resolvedBaseColor
         canvas.resetActiveStroke()
         erasing = false
