@@ -183,15 +183,16 @@ fragment float4 waveFragment(VertexOut in [[stage_in]], constant EffectUniforms 
         if(travel<0.1) return 0;
         float2 axis=u.travel.xy/travel, lateral=float2(-axis.y,axis.x);
         float along=dot(p,axis), across=dot(p,lateral);
-        // A finite strip along the accepted segment, with lateral ripples peeling
-        // away from its sides. There is no radial/end-cap ring.
+        // A finite wake opens behind the cursor; its sloped sides form a soft cone.
         float span=max(18.0,travel), t=-along/span;
         float taper=smoothstep(-0.18,0.12,t)*(1-smoothstep(0.78,1.18,t));
         float width=5+age*3;
-        float d=abs(across)-(3+age*19);
+        float spread=0.22;
+        float d=abs(across)-(3+age*19+max(0.0,-along)*spread);
         float fade=exp(-age*1.8)*(1-smoothstep(1.7,2.3,age));
-        float wake=packetDerivative(d,width,0.62)*sign(across)*taper;
-        gradient=lateral*wake*strength*fade*2.2;
+        float wake=packetDerivative(d,width,0.62)*taper;
+        float2 normal=lateral*sign(across)+axis*(along<0?spread:0.0);
+        gradient=normal*wake*strength*fade*2.2;
         gradient+=axis*exp(-across*across/45)*sin(t*3.14159)*taper*strength*fade*0.10;
     } else {
         bool rain=u.style.x==1;

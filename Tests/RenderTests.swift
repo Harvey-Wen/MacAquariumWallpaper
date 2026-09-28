@@ -168,6 +168,26 @@ import ImageIO
         }
         let h = wakeExtent(horizontal), v = wakeExtent(vertical)
         precondition(h.0 > h.1*2 && v.1 > v.0*2, "Wake must follow its finite travel strip, not stamp circles")
+        func transverseWidth(_ bytes: [UInt8], axis: SIMD2<Float>, distances: ClosedRange<Int>) -> Double {
+            let lateral = SIMD2(-axis.y, axis.x)
+            var weightedWidth = 0.0, totalWeight = 0.0
+            for distance in distances { for across in -70...70 {
+                let point = SIMD2<Float>(850,500) - axis * Float(distance) + lateral * Float(across)
+                let i = (Int(1000-point.y)*1600+Int(point.x))*4
+                let weight = Double((0..<3).reduce(0) { $0 + abs(Int(bytes[i+$1])-Int(plain[i+$1])) })
+                weightedWidth += weight * Double(across*across); totalWeight += weight
+            }}
+            precondition(totalWeight > 100, "Both ends of the wake remain visible")
+            return sqrt(weightedWidth / totalWeight)
+        }
+        for axis in [SIMD2<Float>(1,0), SIMD2<Float>(0,1), SIMD2<Float>(-1,0), simd_normalize(SIMD2<Float>(1,1))] {
+            var cone = wake; cone.ripples[0].travel = axis * 100
+            let bytes = try renderer.renderRGBA(frame: cone,width: 1600,height: 1000)
+            let front = transverseWidth(bytes,axis: axis,distances: 18...30)
+            let rear = transverseWidth(bytes,axis: axis,distances: 65...77)
+            print("Wake width along \(axis): front \(front), rear \(rear)")
+            precondition(rear > front * 1.45, "Cursor wake must widen behind its narrow front in every direction")
+        }
         var refracted = wake
         refracted.fish = [FishState(id: 1,species: .koi,position: SIMD2(842,465),velocity: .zero,heading: 0,length: 95,depth: 0.3,phase: 0,panic: 0)]
         let wetFish = try renderer.renderRGBA(frame: refracted,width: 1600,height: 1000)

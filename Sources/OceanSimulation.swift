@@ -355,13 +355,14 @@ final class OceanSimulation {
         if leaves.count > 12 { leaves.removeFirst(leaves.count - 12) }
     }
 
-    // Same travel strip, taper and lateral wave packet as the optical motion field.
+    // Same cone, taper and wave slopes as the optical motion field.
     static func motionWaveForce(at point: SIMD2<Float>, ripple: Ripple) -> SIMD2<Float> {
         let length = simd_length(ripple.travel)
         guard length > 0.1, ripple.age >= 0, ripple.age < 2.3 else { return .zero }
         let axis = ripple.travel / length, lateral = SIMD2(-axis.y, axis.x)
         let offset = point - ripple.position
-        let t = -simd_dot(offset, axis) / max(18, length)
+        let along = simd_dot(offset, axis)
+        let t = -along / max(18, length)
         func smooth(_ low: Float, _ high: Float, _ value: Float) -> Float {
             let x = min(1, max(0, (value - low) / (high - low)))
             return x * x * (3 - 2 * x)
@@ -370,13 +371,15 @@ final class OceanSimulation {
         guard taper > 0 else { return .zero }
         let across = simd_dot(offset, lateral)
         let width = 5 + ripple.age * 3
-        let d = abs(across) - (3 + ripple.age * 19)
+        let spread: Float = 0.22
+        let d = abs(across) - (3 + ripple.age * 19 + max(0, -along) * spread)
         let derivative = exp(-d*d/(width*width)) * (-0.62*sin(0.62*d) - 2*d/(width*width)*cos(0.62*d))
         let side: Float = across > 0 ? 1 : (across < 0 ? -1 : 0)
         let fade = exp(-ripple.age * 1.8) * (1 - smooth(1.7, 2.3, ripple.age))
-        let lateralSlope = derivative * side * taper * ripple.strength * fade * 2.2
+        let slope = derivative * taper * ripple.strength * fade * 2.2
+        let normal = lateral * side + axis * (along < 0 ? spread : 0)
         let forwardSlope = exp(-across*across/45) * sin(t * .pi) * taper * ripple.strength * fade * 0.10
-        return (lateral * lateralSlope + axis * forwardSlope) * 13
+        return (normal * slope + axis * forwardSlope) * 13
     }
 
     private func updateLeaves(step: Float) {

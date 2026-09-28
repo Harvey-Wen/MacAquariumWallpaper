@@ -193,11 +193,21 @@ private enum SimulationTests {
         let ahead = OceanSimulation.motionWaveForce(at: SIMD2(850,510), ripple: ripple)
         let pastTail = OceanSimulation.motionWaveForce(at: SIMD2(700,510), ripple: ripple)
         let farSide = OceanSimulation.motionWaveForce(at: SIMD2(770,600), ripple: ripple)
-        try expect(abs(behind.y)>0.1 && abs(behind.y)>abs(behind.x)*5, "leaf force follows lateral wake slopes behind the segment")
+        try expect(abs(behind.y)>0.1 && abs(behind.y)>abs(behind.x)*3, "leaf force follows outward wake slopes behind the segment")
         try expect(ahead == .zero && pastTail == .zero && simd_length(farSide)<0.0001, "no radial push ahead, beyond the tail or outside the wave packet")
         let rotated = Ripple(position: SIMD2(800,500),age: ripple.age,strength: ripple.strength,source: .motion,travel: SIMD2(0,60))
         let rotatedForce = OceanSimulation.motionWaveForce(at: SIMD2(790,470), ripple: rotated)
         try expect(simd_distance(rotatedForce,SIMD2(-behind.y,behind.x))<0.0001, "leaf force rotates with the same travel axis as visible waves")
+        func forceWidth(distance: Float) -> Float {
+            var weightedWidth: Float = 0, totalWeight: Float = 0
+            for across in -70...70 {
+                let point = ripple.position + SIMD2(-distance,Float(across))
+                let weight = simd_length(OceanSimulation.motionWaveForce(at: point,ripple: ripple))
+                weightedWidth += weight * Float(across*across); totalWeight += weight
+            }
+            return sqrt(weightedWidth / totalWeight)
+        }
+        try expect(forceWidth(distance: 44) > forceWidth(distance: 12) * 1.4, "leaf response widens toward the rear of the cone")
         let sim = OceanSimulation(size: SIMD2(1600,1000),seed: 7)
         sim.weather = .rainy
         for _ in 0..<180 { sim.update(deltaTime: 1/30) }
