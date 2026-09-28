@@ -7,10 +7,15 @@ final class OceanSimulation {
     private(set) var leaves: [PondLeaf] = []
     private(set) var time: Float = 0
     private(set) var size: SIMD2<Float>
-    var weather: PondWeather = .sunny
+    var weather: PondWeather = .sunny {
+        didSet { if weather != oldValue { nextPrecipitationTime = elapsedTime } }
+    }
+    private var precipitation: [FallingPrecipitation] = []
+    private var surfaceSnow: [SurfaceSnow] = []
+    private var nextPrecipitationID = 0
+    private var nextPrecipitationTime = 0.0
 
     private var elapsedTime: Double = 0
-    private var nextRainTime = 1.0 / 40
     private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
@@ -19,10 +24,12 @@ final class OceanSimulation {
     private var lastMotionPosition: SIMD2<Float>?
     private var lastMotionTime: Double = 0
     private var generator: SeededGenerator
+    private var precipitationGenerator: SeededGenerator
 
     init(size: SIMD2<Float>, seed: UInt64 = 42) {
         self.size = Self.validSize(size)
         generator = SeededGenerator(seed: seed)
+        precipitationGenerator = SeededGenerator(seed: seed ^ 0xA0761D6478BD642F)
         fish = Self.makeFish(in: self.size, generator: &generator)
     }
 
@@ -71,6 +78,12 @@ final class OceanSimulation {
         // Fish react along every accepted segment, independently of the wave budget.
         // Distance-weighted impulses keep the response stable across pointer sample rates.
         let travel = position - previous
+        for index in surfaceSnow.indices {
+            let along = min(1, max(0, simd_dot(surfaceSnow[index].position - previous, travel) / (step * step)))
+            if simd_distance(surfaceSnow[index].position, previous + travel * along) < 24 + surfaceSnow[index].radius {
+                surfaceSnow[index].clearing = true
+            }
+        }
         for index in fish.indices {
             let along = min(1, max(0, simd_dot(fish[index].position - previous, travel) / (step * step)))
             let offset = fish[index].position - (previous + travel * along)
@@ -117,13 +130,26 @@ final class OceanSimulation {
             leaves[index].velocity *= ratio
             leaves[index].length *= ratio
         }
+        for index in precipitation.indices {
+            let landing = SIMD2(precipitation[index].origin.x, precipitation[index].landingY)
+            precipitation[index].origin = PondGeometry.point(for: PondGeometry.uv(for: precipitation[index].origin, size: size), size: next)
+            precipitation[index].landingY = PondGeometry.point(for: PondGeometry.uv(for: landing, size: size), size: next).y
+            precipitation[index].velocity *= ratio
+            precipitation[index].radius *= ratio
+            precipitation[index].sway *= ratio
+        }
+        for index in surfaceSnow.indices {
+            surfaceSnow[index].position = PondGeometry.point(for: PondGeometry.uv(for: surfaceSnow[index].position, size: size), size: next)
+            surfaceSnow[index].radius *= ratio
+        }
         size = next
         for index in fish.indices { contain(&fish[index]) }
     }
 
     func frame(waterStrength: Float) -> OceanFrame {
         OceanFrame(size: size, time: elapsedTime, fish: fish, ripples: ripples,
-                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount, atmosphere: atmosphere)
+                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount, atmosphere: atmosphere,
+                   precipitation: precipitation, surfaceSnow: surfaceSnow)
     }
 
     private func integrate(step: Float) {
@@ -135,10 +161,7 @@ final class OceanSimulation {
         for index in 0..<3 where atmosphere[index] < 0.0001 { atmosphere[index] = 0 }
 
         ageRipples(step: step)
-        while elapsedTime + 0.000_001 >= nextRainTime {
-            if weather == .rainy { spawnRain(age: Float(max(0, elapsedTime - nextRainTime))) }
-            nextRainTime += 1.0 / 40
-        }
+        updatePrecipitation(step: step)
         while elapsedTime + 0.000_001 >= nextLeafTime {
             spawnLeaf()
             nextLeafTime += 168.0 / 60
@@ -229,8 +252,55 @@ final class OceanSimulation {
         }
     }
 
-    private func spawnRain(age: Float) {
-        guard let point = randomWaterPoint(margin: 8) else { return }
+    private func updatePrecipitation(step: Float) {
+        for index in surfaceSnow.indices {
+            surfaceSnow[index].age += step
+            if surfaceSnow[index].clearing || surfaceSnow[index].age > surfaceSnow[index].lifetime {
+                surfaceSnow[index].opacity *= exp(-step * (surfaceSnow[index].clearing ? 5 : 1.3))
+            }
+        }
+        surfaceSnow.removeAll { $0.opacity < 0.01 }
+        for index in precipitation.indices { precipitation[index].age += step }
+        if weather == .snowy || weather == .rainy {
+            let kind: PrecipitationKind = weather == .snowy ? .snow : .rain
+            let rate: Double = kind == .snow ? 45 : 900
+            while nextPrecipitationTime <= elapsedTime + 0.000_001 {
+                if precipitation.count < 1600 {
+                    spawnPrecipitation(kind: kind, age: Float(max(0, elapsedTime - nextPrecipitationTime)))
+                }
+                // Poisson arrival times allow natural clusters and gaps, not rows.
+                nextPrecipitationTime += -log(Double(precipitationGenerator.float(in: 0.0001...1))) / rate
+            }
+        }
+        for particle in precipitation where particle.age >= particle.duration {
+            let point = particle.position(at: particle.duration)
+            guard PondGeometry.contains(point, size: size, margin: particle.radius * 2) else { continue }
+            if particle.kind == .snow, surfaceSnow.count < 1200 {
+                surfaceSnow.append(SurfaceSnow(id: particle.id, position: point, radius: particle.radius,
+                    age: 0, lifetime: 15 + sin(particle.phase * 7) * 5, opacity: particle.opacity, phase: particle.phase))
+            } else if particle.kind == .rain && particle.id % 18 == 0 {
+                rainImpact(at: point, age: particle.age - particle.duration)
+            }
+        }
+        precipitation.removeAll { $0.age >= $0.duration }
+    }
+
+    private func spawnPrecipitation(kind: PrecipitationKind, age: Float) {
+        let scale = max(size.x / 1600, size.y / 1000)
+        let snow = kind == .snow
+        let radius = precipitationGenerator.float(in: snow ? 0.9...2.9 : 0.4...0.85) * scale
+        let velocity = SIMD2(precipitationGenerator.float(in: snow ? -12...16 : 55...140),
+                             -precipitationGenerator.float(in: snow ? 35...85 : 720...1150)) * scale
+        precipitation.append(FallingPrecipitation(id: nextPrecipitationID, kind: kind,
+            origin: SIMD2(precipitationGenerator.float(in: (-45 * scale)...(size.x + 45 * scale)), size.y + 12 * scale),
+            velocity: velocity, age: age, landingY: precipitationGenerator.float(in: 0...size.y), radius: radius,
+            opacity: precipitationGenerator.float(in: snow ? 0.55...0.95 : 0.25...0.55),
+            sway: snow ? precipitationGenerator.float(in: 5...24) * scale : 0,
+            frequency: precipitationGenerator.float(in: 0.7...2.4), phase: precipitationGenerator.float(in: 0...(2 * .pi))))
+        nextPrecipitationID += 1
+    }
+
+    func rainImpact(at point: SIMD2<Float>, age: Float) {
         addRipple(at: point, strength: 0.24, source: .rain, age: age)
         for index in fish.indices {
             let offset = fish[index].position - point
@@ -331,14 +401,6 @@ final class OceanSimulation {
             leaves[index] = leaf
         }
         leaves.removeAll { $0.age >= 16 }
-    }
-
-    private func randomWaterPoint(margin: Float) -> SIMD2<Float>? {
-        for _ in 0..<24 {
-            let point = SIMD2(generator.float(in: 0...size.x), generator.float(in: 0...size.y))
-            if PondGeometry.contains(point, size: size, margin: margin) { return point }
-        }
-        return nil
     }
 
     private static func makeFish(in size: SIMD2<Float>, generator: inout SeededGenerator) -> [FishState] {
