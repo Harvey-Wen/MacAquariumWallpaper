@@ -25,6 +25,11 @@ private struct EffectUniforms {
     var atmosphere: SIMD4<Float> = .zero
 }
 
+private struct PrecipitationUniforms {
+    var placement: SIMD4<Float>
+    var style: SIMD4<Float>
+}
+
 final class OceanRenderer: NSObject, MTKViewDelegate {
     var frame = OceanFrame.empty
     private let device: MTLDevice
@@ -33,6 +38,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let effectPipeline: MTLRenderPipelineState
     private let wavePipeline: MTLRenderPipelineState
     private let compositePipeline: MTLRenderPipelineState
+    private let precipitationPipeline: MTLRenderPipelineState
     private var targets: (scene: MTLTexture, msaa: MTLTexture, depth: MTLTexture, waves: MTLTexture, output: MTLTexture)?
     private let fishDepth: MTLDepthStencilState
     private let effectDepth: MTLDepthStencilState
@@ -83,6 +89,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         fishPipeline = try pipeline("fishVertex", "fishFragment")
         effectPipeline = try pipeline("effectVertex", "effectFragment")
         compositePipeline = try pipeline("effectVertex", "waterFragment")
+        precipitationPipeline = try pipeline("precipitationVertex", "precipitationFragment")
         let waveDescriptor = MTLRenderPipelineDescriptor()
         waveDescriptor.vertexFunction = library.makeFunction(name: "waveVertex")
         waveDescriptor.fragmentFunction = library.makeFunction(name: "waveFragment")
@@ -166,7 +173,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
         guard let destination = pass.colorAttachments[0].texture,
               prepareTargets(width: destination.width, height: destination.height), let targets else { return }
-        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || simd_length_squared(frame.atmosphere) > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else {
+        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || simd_length_squared(frame.atmosphere) > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty || !frame.precipitation.isEmpty || !frame.surfaceSnow.isEmpty else {
             command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding(); return
         }
         let scenePass = MTLRenderPassDescriptor()
@@ -238,21 +245,36 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        func drawPrecipitation(_ sprites: [PrecipitationUniforms]) {
+            guard !sprites.isEmpty, let buffer = device.makeBuffer(bytes: sprites,
+                length: sprites.count * MemoryLayout<PrecipitationUniforms>.stride, options: .storageModeShared) else { return }
+            encoder.setRenderPipelineState(precipitationPipeline)
+            encoder.setDepthStencilState(effectDepth)
+            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 1)
+            encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: sprites.count)
+        }
+        drawPrecipitation(frame.surfaceSnow.map { snow in
+            let radius = snow.radius * (1 + min(snow.age / 2, 1) * 0.65)
+            return PrecipitationUniforms(placement: SIMD4(snow.position.x, snow.position.y, radius * 3, radius * 2.4),
+                style: SIMD4(snow.opacity, 2, snow.phase, snow.phase))
+        })
         for leaf in frame.leaves {
             let progress = min(1, max(0, leaf.age / max(leaf.fallDuration, 0.001)))
             let eased = progress * progress * (3 - 2 * progress)
             let scale: Float = leaf.stage == .falling ? 1 + 0.35 * (1 - eased) : 1
             effect(at: leaf.position, radius: leaf.length * scale, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
         }
-        if frame.weatherAmount > 0 {
-            // Reduce Double time before Float conversion; frozen frames also freeze rain.
-            effect(at: frame.size * 0.5, radius: 1, type: 4,
-                   age: Float(frame.time.truncatingRemainder(dividingBy: 8)), strength: frame.weatherAmount)
-        }
-        if frame.atmosphere.x > 0 {
-            effect(at: frame.size * 0.5, radius: 1, type: 6,
-                   age: Float(frame.time.truncatingRemainder(dividingBy: 256)), strength: frame.atmosphere.x)
-        }
+        drawPrecipitation(frame.precipitation.map { particle in
+            let point = particle.position
+            let rain = particle.kind == .rain
+            let length = rain ? max(3, -particle.velocity.y * 0.009) : particle.radius * 3
+            let width = rain ? particle.radius * 2 : particle.radius * 3
+            let angle = rain ? atan2(particle.velocity.y, particle.velocity.x) : particle.phase + particle.age * 0.2
+            return PrecipitationUniforms(placement: SIMD4(point.x, point.y, length, width),
+                style: SIMD4(particle.opacity, Float(particle.kind.rawValue), particle.phase, angle))
+        })
         encoder.endEncoding()
     }
 
