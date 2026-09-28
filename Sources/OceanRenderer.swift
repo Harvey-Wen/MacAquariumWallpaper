@@ -23,6 +23,7 @@ private struct EffectUniforms {
     var placement: SIMD4<Float>
     var style: SIMD4<Float>
     var atmosphere: SIMD4<Float> = .zero
+    var travel: SIMD4<Float> = .zero
 }
 
 private struct PrecipitationUniforms {
@@ -271,9 +272,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         guard let waveEncoder = command.makeRenderCommandEncoder(descriptor: wavePass) else { return }
         waveEncoder.setRenderPipelineState(wavePipeline)
         for ripple in frame.ripples.prefix(96) where ripple.age >= 0 && ripple.age < (ripple.source == .rain ? 1.4 : 2.3) {
-            let radius = ripple.source == .motion ? ripple.age * 44 + 42 : ripple.age * (ripple.source == .rain ? 45 : 65) + 28
+            let radius = ripple.source == .motion ? (ripple.age + ripple.duration) * 90 + 24 + simd_length(ripple.travel) * 0.5 : ripple.age * (ripple.source == .rain ? 45 : 65) + 28
             var u = EffectUniforms(viewport: viewport, placement: SIMD4(ripple.position.x, ripple.position.y, radius, 0),
-                style: SIMD4(Float(ripple.source.rawValue), ripple.age, ripple.strength, 0))
+                style: SIMD4(Float(ripple.source.rawValue), ripple.age, ripple.strength, 0),
+                travel: ripple.source == .motion ? SIMD4(ripple.travel.x, ripple.travel.y, ripple.duration, 0) : .zero)
             waveEncoder.setVertexBytes(&u, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             waveEncoder.setFragmentBytes(&u, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             waveEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)

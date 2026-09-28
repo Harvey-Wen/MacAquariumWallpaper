@@ -19,7 +19,7 @@ private enum SimulationTests {
         try weatherModesTransitionAndStayDry()
         try populationAndShoreline()
         try waterClicksAndFalloff()
-        try radialMotionWavesAndRainBudget()
+        try dispersiveMotionWavesAndRainBudget()
         try motionSourcesFollowPathAndResize()
         try pointerMovementIsQuietAndBounded()
         try pointerReentryAndJumpDoNotBridge()
@@ -187,7 +187,7 @@ private enum SimulationTests {
         try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
     }
 
-    private static func radialMotionWavesAndRainBudget() throws {
+    private static func dispersiveMotionWavesAndRainBudget() throws {
         let ripple = Ripple(position: SIMD2(800,500),age: 0.3,strength: 0.34,source: .motion)
         let right = OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(15,0),ripple: ripple)
         let up = OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(0,15),ripple: ripple)
@@ -208,6 +208,19 @@ private enum SimulationTests {
         try expect(forceRadius(age: 0.8) > forceRadius(age: 0.25) * 2, "released rings keep expanding after the pointer moves away")
         var expired = ripple; expired.age = 2.3
         try expect(OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(100,0),ripple: expired) == .zero, "released rings fully dissipate")
+        // Deep-water dispersion: long waves occupy the outer part of an impulse.
+        func crossings(_ radii: ClosedRange<Int>) -> Int {
+            var sample = ripple; sample.age = 1
+            var previous: Float = 0, count = 0
+            for radius in radii {
+                let value = OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(Float(radius),0),ripple: sample).x
+                if value * previous < 0 { count += 1 }
+                previous = value
+            }
+            return count
+        }
+        try expect(crossings(30...65) >= crossings(65...100) * 2 && crossings(65...100) > 0,
+                   "outer crests must be farther apart than inner crests; equal-speed stamped rings are not dispersive")
         let sim = OceanSimulation(size: SIMD2(1600,1000),seed: 7)
         sim.weather = .rainy
         for _ in 0..<180 { sim.update(deltaTime: 1/30) }
@@ -227,9 +240,24 @@ private enum SimulationTests {
         sim.update(deltaTime: 0.2)
         sim.trackPointer(SIMD2(730,550))
         try expect(sim.ripples[0].position == SIMD2(730,520) && sim.ripples[1].position == SIMD2(730,550),
-                   "turning keeps old circles anchored to the earlier path")
-        try expect(sim.ripples[0].age > sim.ripples[1].age, "older circles spread farther behind the pointer")
+                   "turning keeps old sources anchored to the earlier path")
+        try expect(sim.ripples[0].age > sim.ripples[1].age, "older sources propagate farther behind the pointer")
+        try expect(sim.ripples[0].travel == SIMD2(30,20) && sim.ripples[1].travel == SIMD2(0,30),
+                   "a turn retains two historical source segments, not a rotated wake")
+        let whole = Ripple(position: SIMD2(800,500),age: 0.5,strength: 0.34,source: .motion,
+                           travel: SIMD2(24,0),duration: 0.16)
+        var first = whole; first.position.x -= 12; first.age += 0.08; first.travel.x = 12; first.duration = 0.08
+        var second = whole; second.travel.x = 12; second.duration = 0.08
+        var error: Float = 0, energy: Float = 0
+        for x in stride(from: Float(730),through: 850,by: 5) {
+            let point = SIMD2(x,Float(520))
+            let unsplit = OceanSimulation.motionWaveForce(at: point,ripple: whole)
+            let split = OceanSimulation.motionWaveForce(at: point,ripple: first) + OceanSimulation.motionWaveForce(at: point,ripple: second)
+            error += simd_length_squared(unsplit - split); energy += simd_length_squared(split)
+        }
+        try expect(sqrt(error / energy) < 0.02, "continuous source integration must not depend on pointer segment boundaries")
         sim.resize(to: SIMD2(1920,1200))
+        try expect(simd_distance(sim.ripples[0].travel,SIMD2(36,24)) < 0.001, "resize scales historical segments")
         try expect(simd_distance(sim.ripples[0].position, SIMD2(876,624)) < 0.001, "resize maps released wave origins with scene geometry")
         let count = sim.ripples.count
         sim.trackPointer(SIMD2(900,600))

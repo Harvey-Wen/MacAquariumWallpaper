@@ -2,7 +2,7 @@
 using namespace metal;
 struct FishVertex { float4 position, normal, detail; };
 struct FishUniforms { float4 viewport, placement, motion, kind, appearance; };
-struct EffectUniforms { float4 viewport, placement, style, atmosphere; };
+struct EffectUniforms { float4 viewport, placement, style, atmosphere, travel; };
 struct VertexOut { float4 position [[position]]; float2 point; float3 local; float3 normal; float4 detail; };
 constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
 float2 imageUV(float2 p, float2 size) {
@@ -168,24 +168,36 @@ fragment float4 precipitationFragment(VertexOut in [[stage_in]], constant Effect
 // Wave gradients are signed and additive: intersections share one water normal.
 vertex VertexOut waveVertex(uint id [[vertex_id]], constant EffectUniforms &u [[buffer(0)]]) {
     const float2 quad[6]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,-1),float2(1,1),float2(-1,1)};
-    float2 p=u.placement.xy+quad[id]*u.placement.z;
+    float2 p=u.placement.xy-u.travel.xy*0.5+quad[id]*u.placement.z;
     VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1); o.point=p; return o;
 }
 float packetDerivative(float d, float width, float k) {
     return exp(-d*d/(width*width))*(-k*sin(k*d)-2*d/(width*width)*cos(k*d));
+}
+// Gravity-wave impulse, band-limited by the small pressure footprint.
+// Its chirped phase gives c_group = c_phase / 2, unlike a translated cosine ring.
+float2 motionGradient(float2 p, float age) {
+    float r=sqrt(dot(p,p)+9), k=1250*age*age/(r*r);
+    float phase=-k*r+M_PI_F/4;
+    float fade=smoothstep(0.0,0.06,age)*(1-smoothstep(1.5,2.3,age))
+        *(1-smoothstep(age*65+12,age*90+24,r));
+    float amplitude=age/(r*r)*exp(-4*k*k-age*0.4)*fade;
+    float derivative=amplitude*((16*k*k-2)/r*sin(phase)+k*cos(phase));
+    return p/r*derivative;
 }
 fragment float4 waveFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]]) {
     float age=u.style.y, strength=u.style.z;
     float2 p=in.point-u.placement.xy, gradient=0;
     float foam=0;
     if(u.style.x==3) {
-        // Each point left by the moving source releases circular waves. Older
-        // circles grow behind newer ones, so their overlap forms the wake.
-        float r=length(p), width=9+age*3;
-        float d=r-age*44;
-        float fade=exp(-age*0.9)/sqrt(1+age*0.8)*smoothstep(0.0,0.06,age)
-            *(1-smoothstep(1.5,2.3,age));
-        gradient=p/max(r,0.01)*packetDerivative(d,width,0.58)*strength*fade*2.0;
+        // Midpoint quadrature fills the path between pointer samples, rather than
+        // stamping separate rings. Old segments retain their position on turns.
+        int samples=clamp(int(ceil(length(u.travel.xy)/4)),8,32);
+        for(int i=0;i<samples;i++) {
+            float fraction=(float(i)+0.5)/float(samples);
+            gradient+=motionGradient(p+u.travel.xy*fraction,age+u.travel.z*fraction);
+        }
+        gradient*=u.travel.z/float(samples)*strength*55000;
     } else {
         bool rain=u.style.x==1;
         float seed=hash(u.placement.xy), angle=atan2(p.y,p.x), r=length(p);

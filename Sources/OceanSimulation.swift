@@ -120,9 +120,11 @@ final class OceanSimulation {
         guard let lastMotionPosition,
               simd_distance(position, lastMotionPosition) >= 11,
               elapsedTime - lastMotionTime >= 0.12 else { return }
+        let duration = min(0.2, Float(elapsedTime - lastMotionTime))
         self.lastMotionPosition = position
         lastMotionTime = elapsedTime
-        addRipple(at: position, strength: 0.34, source: .motion)
+        addRipple(at: position, strength: 0.34, source: .motion,
+                  travel: position - lastMotionPosition, duration: duration)
     }
 
     func resetPointer() {
@@ -146,6 +148,7 @@ final class OceanSimulation {
         }
         for index in ripples.indices {
             ripples[index].position = PondGeometry.point(for: PondGeometry.uv(for: ripples[index].position, size: size), size: next)
+            ripples[index].travel *= ratio
         }
         for index in leaves.indices {
             leaves[index].position = PondGeometry.point(for: PondGeometry.uv(for: leaves[index].position, size: size), size: next)
@@ -262,9 +265,10 @@ final class OceanSimulation {
         ripples.removeAll { $0.source == .rain ? $0.age >= 1.4 - 0.00001 : $0.age > 2.3 }
     }
 
-    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0) {
+    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0,
+                           travel: SIMD2<Float> = .zero, duration: Float = 0.12) {
         guard PondGeometry.contains(position, size: size) else { return }
-        ripples.append(Ripple(position: position, age: age, strength: strength, source: source))
+        ripples.append(Ripple(position: position, age: age, strength: strength, source: source, travel: travel, duration: duration))
         // Rain owns a separate bounded budget so dense rainfall cannot evict interaction.
         let rain = source == .rain
         let limit = rain ? 72 : 24
@@ -354,21 +358,32 @@ final class OceanSimulation {
         if leaves.count > 12 { leaves.removeFirst(leaves.count - 12) }
     }
 
-    // Each released circle keeps propagating around its original water position.
-    // Match the optical motion field so floating leaves follow the visible rings.
+    // Stationary-phase approximation of a deep-water gravity impulse: omega²=g*k.
+    // At radius r and age t, k=g*t²/(4*r²), so long waves run ahead of short ones.
+    // Integrate timed path segments coherently; their interference forms the wake.
+    // Keep this field in sync with motionGradient in Ocean.metal.
     static func motionWaveForce(at point: SIMD2<Float>, ripple: Ripple) -> SIMD2<Float> {
-        guard ripple.age > 0, ripple.age < 2.3 else { return .zero }
-        let offset = point - ripple.position, radius = simd_length(offset)
+        guard ripple.age >= 0, ripple.age < 2.3 else { return .zero }
         func smooth(_ low: Float, _ high: Float, _ value: Float) -> Float {
             let x = min(1, max(0, (value - low) / (high - low)))
             return x * x * (3 - 2 * x)
         }
-        let width = 9 + ripple.age * 3
-        let d = radius - ripple.age * 44
-        let derivative = exp(-d*d/(width*width)) * (-0.58*sin(0.58*d) - 2*d/(width*width)*cos(0.58*d))
-        let fade = exp(-ripple.age * 0.9) / sqrt(1 + ripple.age * 0.8)
-            * smooth(0, 0.06, ripple.age) * (1 - smooth(1.5, 2.3, ripple.age))
-        return offset / max(radius, 0.01) * derivative * ripple.strength * fade * 2 * 13
+        let samples = min(32, max(8, Int(ceil(simd_length(ripple.travel) / 4))))
+        var gradient = SIMD2<Float>.zero
+        for index in 0..<samples {
+            let fraction = (Float(index) + 0.5) / Float(samples)
+            let age = ripple.age + ripple.duration * fraction
+            let offset = point - ripple.position + ripple.travel * fraction
+            let radius = sqrt(simd_length_squared(offset) + 9)
+            let k = 1250 * age * age / (radius * radius)
+            let phase = -k * radius + Float.pi / 4
+            let fade = smooth(0, 0.06, age) * (1 - smooth(1.5, 2.3, age))
+                * (1 - smooth(age * 65 + 12, age * 90 + 24, radius))
+            let amplitude = age / (radius * radius) * exp(-4 * k * k - age * 0.4) * fade
+            let derivative = amplitude * ((16 * k * k - 2) / radius * sin(phase) + k * cos(phase))
+            gradient += offset / radius * derivative
+        }
+        return gradient * (ripple.duration / Float(samples) * ripple.strength * 55000 * 13)
     }
 
     private func updateLeaves(step: Float) {

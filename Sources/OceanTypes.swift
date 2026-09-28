@@ -76,6 +76,8 @@ struct Ripple {
     var age: Float
     var strength: Float
     var source: DisturbanceKind = .click
+    var travel: SIMD2<Float> = .zero
+    var duration: Float = 0.12
 }
 
 struct PondLeaf {
