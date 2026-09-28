@@ -100,3 +100,11 @@
 - 现有真实 Metal 回归可验证方向、折射、消散、不同尺寸与 GPU 耗时，不需要修改桌面背景的集成测试。
 - 用户进一步明确：需要“一圈一圈往外散”叠加出的锥形，先前两条斜边波带方案不符合视觉目标。参考UBC波场模型沿路径叠加圆形波，NUS尾波说明中的横向/外向波峰，以及真实水槽移动波源照片。
 - 参考：https://www.cs.ubc.ca/labs/imager/th/1994/Khan1994/ ，https://crisp.nus.edu.sg/~research/shipwakes/shipwakes.htm ，https://zpe.gov.pl/a/przeczytaj/DVXBCK9ck 。
+
+## 2026-09-28 真实尾波取证
+- 香港天文台实拍与解释：https://my.weather.gov.hk/en/education/aviation-and-marine/aviation/00387-in-the-wake-of-a-duck.html 。图1/3为真实鸭子尾波，图2解释色散与干涉。不是把完整圆圈逐个保留；可见波峰连接为羽毛状/弯曲横向波列，整体落在楔形范围。
+- UBC几何推导：https://personal.math.ubc.ca/~cass/courses/m309-01a/carmen/Mainpage.htm ，波峰参数方程给出连续曲线及尖点；半角约19.47度仅作为深水重力波基准。
+- 细杆实验：Moisy & Rabaud, Mach-like capillary-gravity wakes, https://arxiv.org/pdf/1406.0422 ，第3页实拍1.5mm杆在0.60/0.80/1.80m/s拖动和16mm杆在0.63/2.5m/s；毛细效应及速度改变显著波纹夹角，不能给所有鼠标速度硬套固定角度。
+- 当前shader相位与包络都以44点/秒平移，缺少色散（重力波群速度与相速度区别）及连续移动扰动的相干叠加，因此不是Kelvin尾波。
+- 已实际查看并在应用内打开船尾波照片：https://euphonics.org/wp-content/uploads/2026/01/Wake.avon_.gorge_.arp_.750pix.jpg （Adrian Pingstone，公有领域；来源页 https://euphonics.org/4-4-other-types-of-waves-dispersion-and-group-velocity/ 图8）。可见多排弯曲横波衔接到两侧羽状波列，整体是前尖后宽的楔形；外包络不是需要画出的两条硬直线。
+- 下一版视觉判据：同一锥形内多层连续弯曲波峰；不会出现沿轨迹串珠式完整圆圈；波峰传播与波包扩散速度分离，转弯沿已有扰动历史演化，最终消散。
