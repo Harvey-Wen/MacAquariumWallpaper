@@ -20,8 +20,8 @@ private enum ListTestError: Error { case rejected }
             strokes: [], baseColor: FishColor(red: 0.05, green: 0.4, blue: 0.95))
         try renderer.registerDrawing(drawing)
         try renderer.registerDrawing(blue)
-        simulation.addCustomFish(appearanceID: drawing.id)
-        simulation.addCustomFish(appearanceID: blue.id)
+        simulation.addCustomFish(appearanceID: drawing.id, name: "小锦 🐟")
+        simulation.addCustomFish(appearanceID: blue.id, name: "小蓝")
         var deleted: [FishIdentity] = []
         var reject = false
         var addRequests = 0
@@ -31,6 +31,10 @@ private enum ListTestError: Error { case rejected }
                 if reject { throw ListTestError.rejected }
                 deleted.append(identity)
                 simulation.removeFish(identity: identity)
+            }, onRename: { identity, name in
+                if reject { throw ListTestError.rejected }
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                simulation.renameFish(identity: identity, name: trimmed.isEmpty ? nil : trimmed)
             }, onAdd: { addRequests += 1 })
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -39,6 +43,8 @@ private enum ListTestError: Error { case rejected }
         check(controller.table.numberOfRows == 32 && controller.emptyLabel.isHidden, "all default and custom fish are listed")
         check(controller.countLabel.stringValue == "共 32 条 · 默认锦鲤 30 条 · 手绘鱼 2 条", "mixed counts are accurate")
         check(controller.fish[0].identity == .custom(drawing.id), "hand-drawn fish appear first")
+        let nameCell = controller.table.view(atColumn: 1, row: 0, makeIfNecessary: true) as! NSTableCellView
+        check(nameCell.textField?.stringValue == "小锦 🐟", "list shows the saved fish name")
         let thumbnail = controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSImageView
         check(thumbnail.image != nil && thumbnail.toolTip == nil, "actual fish thumbnail is displayed")
         check(controller.table.enclosingScrollView!.documentVisibleRect.height < controller.table.bounds.height, "long list scrolls")
@@ -65,17 +71,49 @@ private enum ListTestError: Error { case rejected }
         }
         try snapshot("fish-list.png")
         if CommandLine.arguments.contains("--fixture") { NSApp.run(); return }
-        func deleteButton(_ identity: FishIdentity) -> FishDeleteButton {
+        func actionButton(_ identity: FishIdentity, title: String) -> FishActionButton {
             let row = controller.fish.firstIndex { $0.identity == identity }!
             controller.table.scrollRowToVisible(row)
             let cell = controller.table.view(atColumn: 2, row: row, makeIfNecessary: true)!
-            return cell.subviews.compactMap { $0 as? FishDeleteButton }.first!
+            return cell.subviews.compactMap { $0 as? FishActionButton }.first { $0.title == title }!
         }
+        func deleteButton(_ identity: FishIdentity) -> FishActionButton { actionButton(identity, title: "删除") }
         func respond(_ response: NSApplication.ModalResponse) {
             let sheet = controller.window!.attachedSheet!
             controller.window!.endSheet(sheet, returnCode: response)
             settle()
         }
+        func editField(_ view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            return view.subviews.compactMap { editField($0) }.first
+        }
+        actionButton(.builtIn(4), title: "改名").performClick(nil)
+        let defaultField = editField(controller.window!.attachedSheet!.contentView!)!
+        check(defaultField.stringValue.isEmpty && defaultField.placeholderString == "锦鲤 05", "rename starts with current name or default placeholder")
+        defaultField.stringValue = "小黄"
+        respond(.alertSecondButtonReturn)
+        check(controller.fish.first { $0.identity == .builtIn(4) }?.displayName == "锦鲤 05", "cancel rename preserves name")
+        actionButton(.builtIn(4), title: "改名").performClick(nil)
+        editField(controller.window!.attachedSheet!.contentView!)!.stringValue = "小黄"
+        respond(.alertFirstButtonReturn)
+        check(controller.fish.first { $0.identity == .builtIn(4) }?.displayName == "小黄", "default rename updates list")
+        actionButton(.custom(blue.id), title: "改名").performClick(nil)
+        check(editField(controller.window!.attachedSheet!.contentView!)!.stringValue == "小蓝", "rename pre-fills saved custom name")
+        editField(controller.window!.attachedSheet!.contentView!)!.stringValue = "小锦 🐟"
+        respond(.alertFirstButtonReturn)
+        check(controller.fish[1].displayName == controller.fish[0].displayName && controller.fish[1].identity != controller.fish[0].identity,
+              "same names preserve independent identities")
+        reject = true
+        actionButton(.custom(blue.id), title: "改名").performClick(nil)
+        editField(controller.window!.attachedSheet!.contentView!)!.stringValue = "未保存"
+        respond(.alertFirstButtonReturn)
+        check(controller.fish[1].displayName == "小锦 🐟" && controller.window!.attachedSheet != nil, "rename failure retains old name and explains failure")
+        respond(.alertFirstButtonReturn)
+        reject = false
+        actionButton(.custom(blue.id), title: "改名").performClick(nil)
+        editField(controller.window!.attachedSheet!.contentView!)!.stringValue = ""
+        respond(.alertFirstButtonReturn)
+        check(controller.fish[1].displayName == FishIdentity.custom(blue.id).name, "cleared name returns to fixed identifier")
         deleteButton(.builtIn(12)).performClick(nil)
         check(controller.window!.attachedSheet != nil && deleted.isEmpty, "delete first asks for confirmation")
         respond(.alertSecondButtonReturn)
@@ -94,7 +132,7 @@ private enum ListTestError: Error { case rejected }
               "failed delete retains row and displays an error")
         respond(.alertFirstButtonReturn)
         reject = false
-        simulation.addCustomFish(appearanceID: UUID())
+        simulation.addCustomFish(appearanceID: UUID(), name: String(repeating: "很长的鱼名字", count: 30))
         controller.reload()
         check(controller.table.numberOfRows == 31 && controller.countLabel.stringValue.contains("手绘鱼 2 条"), "list refresh includes newly added fish")
         controller.window!.close()
@@ -105,6 +143,13 @@ private enum ListTestError: Error { case rejected }
         controller.window!.layoutIfNeeded()
         settle()
         let lastRow = controller.table.numberOfRows - 1
+        controller.table.scrollRowToVisible(1)
+        controller.window!.layoutIfNeeded()
+        settle()
+        let longNameCell = controller.table.view(atColumn: 1, row: 1, makeIfNecessary: true) as! NSTableCellView
+        longNameCell.layoutSubtreeIfNeeded()
+        check(longNameCell.textField!.frame.maxX <= longNameCell.bounds.maxX + 1,
+              "long names fit the name column without hiding deletion")
         controller.table.scrollRowToVisible(lastRow)
         let lastButton = deleteButton(controller.fish[lastRow].identity)
         let buttonRect = lastButton.convert(lastButton.bounds, to: controller.window!.contentView)

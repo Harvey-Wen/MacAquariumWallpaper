@@ -53,7 +53,7 @@ import AppKit
             add(menu, "画一条鱼…", #selector(drawFish), key: "n")
             add(menu, "鱼的列表…", #selector(showFishList), key: "l")
             if let error = desktop.defaultFishError {
-                let warning = NSMenuItem(title: "默认鱼的删除记录未能载入", action: nil, keyEquivalent: "")
+                let warning = NSMenuItem(title: "默认鱼的保存信息未能载入", action: nil, keyEquivalent: "")
                 warning.toolTip = error
                 warning.isEnabled = false; menu.addItem(warning)
             }
@@ -105,7 +105,7 @@ import AppKit
         guard let desktop else { return }
         if fishListWindow == nil {
             fishListWindow = FishListWindowController(readFish: { desktop.simulation.fish },
-                preview: desktop.renderer.fishPreview, onDelete: desktop.removeFish,
+                preview: desktop.renderer.fishPreview, onDelete: desktop.removeFish, onRename: desktop.renameFish,
                 onAdd: { [weak self] in self?.drawFish() })
         }
         fishListWindow?.showWindow(nil)

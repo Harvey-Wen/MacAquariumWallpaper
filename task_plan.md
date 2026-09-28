@@ -88,8 +88,8 @@
 ## 2026-09-28 鱼的列表与逐条删除
 - 用户确认范围包含默认30条和手绘新增鱼，重启保持删除。
 - [x] CodeGraph 检查身份、渲染、保存与菜单；确认设计。
-- [ ] 模拟/持久化与行为验证，模块提交。
-- [ ] 桌面同步/真实预览与集成验证，模块提交。
+- [x] 模拟/持久化与行为验证，模块提交。
+- [x] 桌面同步/真实预览与集成验证，模块提交。
 - [ ] 原生列表、验证、构建签名、同步并打开新版。
 - 隔离工作区：`/Users/harvey/.codex/worktrees/fish-list/MacAquariumWallpaper`。
 - 设计：docs/superpowers/specs/2026-09-28-fish-list-design.md；计划：docs/superpowers/plans/2026-09-28-fish-list.md。

@@ -62,8 +62,13 @@ struct FishState {
     var phase: Float
     var panic: Float
     var customAppearanceID: UUID? = nil
+    var name: String? = nil
 
     var identity: FishIdentity { customAppearanceID.map(FishIdentity.custom) ?? .builtIn(id) }
+    var displayName: String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? identity.name : trimmed
+    }
 }
 
 struct Ripple {

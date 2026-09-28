@@ -119,29 +119,54 @@ enum FishDrawingError: Error { case invalidDrawing }
 struct FishDrawingStore {
     let directory: URL
 
-    private var deletedDefaultsURL: URL {
-        directory.appendingPathComponent("state/deleted-default-fish.json")
+    struct DefaultFishState: Codable {
+        var deleted: Set<Int> = []
+        var names: [Int: String] = [:]
     }
 
-    func deletedDefaultFish() throws -> Set<Int> {
-        guard FileManager.default.fileExists(atPath: deletedDefaultsURL.path) else { return [] }
-        return try JSONDecoder().decode(Set<Int>.self, from: Data(contentsOf: deletedDefaultsURL))
+    private var defaultStateURL: URL { directory.appendingPathComponent("state/default-fish.json") }
+
+    func defaultFishState() throws -> DefaultFishState {
+        guard FileManager.default.fileExists(atPath: defaultStateURL.path) else { return DefaultFishState() }
+        return try JSONDecoder().decode(DefaultFishState.self, from: Data(contentsOf: defaultStateURL))
     }
 
     func removeDefaultFish(id: Int) throws {
-        var deleted = try deletedDefaultFish()
-        deleted.insert(id)
-        try FileManager.default.createDirectory(at: deletedDefaultsURL.deletingLastPathComponent(),
+        var state = try defaultFishState()
+        state.deleted.insert(id)
+        try saveDefaultState(state)
+    }
+
+    func renameDefaultFish(id: Int, name: String?) throws {
+        var state = try defaultFishState()
+        state.names[id] = name
+        try saveDefaultState(state)
+    }
+
+    private func saveDefaultState(_ state: DefaultFishState) throws {
+        try FileManager.default.createDirectory(at: defaultStateURL.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        try JSONEncoder().encode(deleted.sorted()).write(to: deletedDefaultsURL, options: .atomic)
+        try JSONEncoder().encode(state).write(to: defaultStateURL, options: .atomic)
+    }
+
+    private func drawingURLs(id: UUID) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter {
+            $0.pathExtension.lowercased() == "json" &&
+            $0.deletingPathExtension().lastPathComponent.lowercased() == id.uuidString.lowercased()
+        }
     }
 
     func remove(id: UUID) throws {
-        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        for url in urls where url.pathExtension.lowercased() == "json" &&
-            url.deletingPathExtension().lastPathComponent.lowercased() == id.uuidString.lowercased() {
-            try FileManager.default.removeItem(at: url)
-        }
+        for url in try drawingURLs(id: id) { try FileManager.default.removeItem(at: url) }
+    }
+
+    func rename(id: UUID, name: String?) throws {
+        guard let url = try drawingURLs(id: id).first else { throw CocoaError(.fileReadNoSuchFile) }
+        var drawing = try JSONDecoder().decode(FishDrawing.self, from: Data(contentsOf: url))
+        try drawing.validate()
+        guard drawing.id == id else { throw FishDrawingError.invalidDrawing }
+        drawing.name = name
+        try JSONEncoder().encode(drawing).write(to: url, options: .atomic)
     }
 
     func save(_ drawing: FishDrawing) throws {

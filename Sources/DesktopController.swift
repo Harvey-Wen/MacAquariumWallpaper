@@ -112,14 +112,16 @@ final class TransparentMetalView: MTKView {
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { $0.updateActivity() }
         do {
-            for id in try self.drawingStore.deletedDefaultFish() { simulation.removeFish(identity: .builtIn(id)) }
+            let saved = try self.drawingStore.defaultFishState()
+            for id in saved.deleted { simulation.removeFish(identity: .builtIn(id)) }
+            for (id, name) in saved.names { simulation.renameFish(identity: .builtIn(id), name: name) }
         } catch { defaultFishError = error.localizedDescription }
         let saved = self.drawingStore.load()
         customFishErrors = saved.errors
         for drawing in saved.drawings {
             do {
                 try renderer.registerDrawing(drawing)
-                simulation.addCustomFish(appearanceID: drawing.id)
+                simulation.addCustomFish(appearanceID: drawing.id, name: drawing.name)
             } catch { customFishErrors.append(error.localizedDescription) }
         }
     }
@@ -139,7 +141,7 @@ final class TransparentMetalView: MTKView {
         try renderer.registerDrawing(drawing)
         do { try drawingStore.save(drawing) }
         catch { renderer.removeDrawing(id: drawing.id); throw error }
-        simulation.addCustomFish(appearanceID: drawing.id)
+        simulation.addCustomFish(appearanceID: drawing.id, name: drawing.name)
         if !enabled { enabled = true }
         else { updateBackdrop(); render(); writeDiagnostics() }
         onFishChanged?()
@@ -158,6 +160,22 @@ final class TransparentMetalView: MTKView {
         if case .custom(let id) = identity { renderer.removeDrawing(id: id) }
         updateBackdrop()
         if enabled && !sleeping && !locked { render() }
+        writeDiagnostics()
+        onFishChanged?()
+    }
+
+    func renameFish(identity: FishIdentity, name: String) throws {
+        guard simulation.fish.contains(where: { $0.identity == identity }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedName = trimmed.isEmpty ? nil : trimmed
+        switch identity {
+        case .builtIn(let id):
+            try drawingStore.renameDefaultFish(id: id, name: savedName)
+            defaultFishError = nil
+        case .custom(let id):
+            try drawingStore.rename(id: id, name: savedName)
+        }
+        simulation.renameFish(identity: identity, name: savedName)
         writeDiagnostics()
         onFishChanged?()
     }

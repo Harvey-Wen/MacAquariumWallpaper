@@ -123,16 +123,25 @@ import simd
         try store.removeDefaultFish(id: 3)
         try store.removeDefaultFish(id: 29)
         try store.removeDefaultFish(id: 3)
-        try expect(try store.deletedDefaultFish() == Set([3, 29]), "default deletions persist without duplicates")
+        try expect(try store.defaultFishState().deleted == Set([3, 29]), "default deletions persist without duplicates")
+        try store.renameDefaultFish(id: 4, name: "小黄")
+        try expect(try store.defaultFishState().names[4] == "小黄" && store.defaultFishState().deleted == Set([3, 29]),
+            "default names and removals persist together")
+        var renamed = store.load().drawings.first { $0.id == first.id }!
+        renamed.name = "小红 🐟"
+        try store.rename(id: first.id, name: renamed.name)
+        try expect(store.load().drawings.first { $0.id == first.id } == renamed, "renaming preserves every drawing field")
         try expect(store.load().drawings.count == 2, "default state is not scanned as a drawing")
         try store.remove(id: first.id)
         try expect(store.load().drawings.map(\.id) == [second.id], "only selected drawing is deleted")
         let secondURL = directory.appendingPathComponent(second.id.uuidString + ".json")
         let lowercaseURL = directory.appendingPathComponent(second.id.uuidString.lowercased() + ".json")
         try FileManager.default.moveItem(at: secondURL, to: lowercaseURL)
+        try store.rename(id: second.id, name: "小蓝")
+        try expect(store.load().drawings.first?.name == "小蓝", "lowercase UUID record can be renamed")
         try store.remove(id: second.id)
         try expect(store.load().drawings.isEmpty, "loaded lowercase UUID filename can be deleted")
-        let stateURL = directory.appendingPathComponent("state/deleted-default-fish.json")
+        let stateURL = directory.appendingPathComponent("state/default-fish.json")
         let corruptState = Data("broken".utf8)
         try corruptState.write(to: stateURL)
         do { try store.removeDefaultFish(id: 4); throw TestError.failed("corrupt deletion state overwritten") }

@@ -1,6 +1,6 @@
 import AppKit
 
-final class FishDeleteButton: NSButton {
+final class FishActionButton: NSButton {
     var fishIdentity: FishIdentity?
 }
 
@@ -8,6 +8,7 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
     private let readFish: () -> [FishState]
     private let preview: (FishState) throws -> NSImage
     private let onDelete: (FishIdentity) throws -> Void
+    private let onRename: (FishIdentity, String) throws -> Void
     private let onAdd: () -> Void
     private var previews: [FishIdentity: NSImage] = [:]
     private(set) var fish: [FishState] = []
@@ -17,10 +18,12 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
     let addButton = NSButton(title: "画一条鱼…", target: nil, action: nil)
 
     init(readFish: @escaping () -> [FishState], preview: @escaping (FishState) throws -> NSImage,
-         onDelete: @escaping (FishIdentity) throws -> Void, onAdd: @escaping () -> Void) {
+         onDelete: @escaping (FishIdentity) throws -> Void,
+         onRename: @escaping (FishIdentity, String) throws -> Void, onAdd: @escaping () -> Void) {
         self.readFish = readFish
         self.preview = preview
         self.onDelete = onDelete
+        self.onRename = onRename
         self.onAdd = onAdd
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 570),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -59,7 +62,7 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
         heading.font = .systemFont(ofSize: 22, weight: .semibold)
         countLabel.font = .systemFont(ofSize: 13)
         countLabel.textColor = .secondaryLabelColor
-        let note = NSTextField(labelWithString: "按花纹找到想移除的鱼。删除后，重新启动也不会恢复。")
+        let note = NSTextField(labelWithString: "名字可以随时修改。删除后，重新启动也不会恢复。")
         note.font = .systemFont(ofSize: 12)
         note.textColor = .secondaryLabelColor
         emptyLabel.alignment = .center
@@ -82,10 +85,10 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
         table.dataSource = self
         table.delegate = self
         table.setAccessibilityLabel("池塘鱼列表")
-        for (id, width) in [("preview", 148.0), ("name", 294.0), ("delete", 100.0)] {
+        for (id, width) in [("preview", 140.0), ("name", 244.0), ("actions", 148.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.width = width
-            column.minWidth = id == "name" ? 220 : width
+            column.minWidth = id == "name" ? 180 : width
             column.resizingMask = id == "name" ? .autoresizingMask : []
             table.addTableColumn(column)
         }
@@ -132,33 +135,45 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
                     view.toolTip = "预览暂不可用：\(error.localizedDescription)"
                 }
             }
-            view.setAccessibilityLabel("\(item.identity.name)的外观")
+            view.setAccessibilityLabel("\(item.displayName)的外观")
             return view
         case "name":
-            let name = NSTextField(labelWithString: item.identity.name)
+            let cell = NSTableCellView()
+            let name = NSTextField(labelWithString: item.displayName)
             name.font = .systemFont(ofSize: 14, weight: .medium)
-            let source = NSTextField(labelWithString: item.customAppearanceID == nil ? "默认锦鲤" : "手绘新增")
+            name.lineBreakMode = .byTruncatingTail
+            name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let source = NSTextField(labelWithString: item.customAppearanceID == nil ? "默认锦鲤" : "手绘新增 · \(item.identity.storageKey.prefix(8))")
             source.font = .systemFont(ofSize: 12)
             source.textColor = .secondaryLabelColor
-            let stack = NSStackView(views: [name, source])
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 5
-            stack.edgeInsets = NSEdgeInsets(top: 16, left: 0, bottom: 16, right: 0)
-            stack.toolTip = item.identity.storageKey
-            return stack
-        case "delete":
-            let cell = NSView()
-            let button = FishDeleteButton(title: "删除", target: self, action: #selector(deleteFish(_:)))
-            button.bezelStyle = .rounded
-            button.fishIdentity = item.identity
-            button.contentTintColor = .systemRed
-            button.setAccessibilityLabel("删除\(item.identity.name)")
-            button.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(button)
+            cell.textField = name
+            for label in [name, source] {
+                label.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(label)
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor).isActive = true
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8).isActive = true
+            }
             NSLayoutConstraint.activate([
-                button.centerXAnchor.constraint(equalTo: cell.centerXAnchor),
-                button.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+                name.centerYAnchor.constraint(equalTo: cell.centerYAnchor, constant: -11),
+                source.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 5)
+            ])
+            cell.toolTip = "\(item.displayName)\n\(item.identity.storageKey)"
+            return cell
+        case "actions":
+            let cell = NSView()
+            let rename = FishActionButton(title: "改名", target: self, action: #selector(renameFish(_:)))
+            let delete = FishActionButton(title: "删除", target: self, action: #selector(deleteFish(_:)))
+            for button in [rename, delete] {
+                button.bezelStyle = .rounded
+                button.fishIdentity = item.identity
+                button.setAccessibilityLabel("\(button.title)\(item.displayName)")
+                button.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(button)
+                button.centerYAnchor.constraint(equalTo: cell.centerYAnchor).isActive = true
+            }
+            NSLayoutConstraint.activate([
+                rename.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                delete.leadingAnchor.constraint(equalTo: rename.trailingAnchor, constant: 6)
             ])
             return cell
         default: return nil
@@ -167,11 +182,45 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
 
     @objc private func addFish() { onAdd() }
 
-    @objc private func deleteFish(_ sender: FishDeleteButton) {
-        guard let identity = sender.fishIdentity, fish.contains(where: { $0.identity == identity }),
+    @objc private func renameFish(_ sender: FishActionButton) {
+        guard let identity = sender.fishIdentity, let item = fish.first(where: { $0.identity == identity }),
               let window, window.attachedSheet == nil else { return }
         let alert = NSAlert()
-        alert.messageText = "删除“\(identity.name)”？"
+        alert.messageText = "给这条鱼改名"
+        alert.informativeText = "修改后会自动保存。留空可恢复为默认编号。"
+        let field = NSTextField(string: item.name ?? "")
+        field.placeholderString = item.identity.name
+        field.setAccessibilityLabel("鱼的名字")
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            do {
+                try self.onRename(identity, field.stringValue)
+                self.reload()
+            } catch { self.showError("未能修改名字", message: "原来的名字仍然保留。\n\(error.localizedDescription)") }
+        }
+        alert.window.makeFirstResponder(field)
+        field.selectText(nil)
+    }
+
+    private func showError(_ title: String, message: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        alert.beginSheetModal(for: window)
+    }
+
+    @objc private func deleteFish(_ sender: FishActionButton) {
+        guard let identity = sender.fishIdentity, let item = fish.first(where: { $0.identity == identity }),
+              let window, window.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        let name = String(item.displayName.prefix(80)) + (item.displayName.count > 80 ? "…" : "")
+        alert.messageText = "删除“\(name)”？"
         alert.informativeText = "这条鱼会从池塘移除，重新启动后也不会恢复。"
         alert.addButton(withTitle: "删除").hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
@@ -183,11 +232,7 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
                 try self.onDelete(identity)
                 self.reload()
             } catch {
-                let failure = NSAlert()
-                failure.messageText = "未能删除这条鱼"
-                failure.informativeText = "鱼仍保留在池塘中。\n\(error.localizedDescription)"
-                failure.addButton(withTitle: "好")
-                failure.beginSheetModal(for: window)
+                self.showError("未能删除这条鱼", message: "鱼仍保留在池塘中。\n\(error.localizedDescription)")
             }
         }
     }

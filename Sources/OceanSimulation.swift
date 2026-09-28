@@ -26,7 +26,7 @@ final class OceanSimulation {
         fish = Self.makeFish(in: self.size, generator: &generator)
     }
 
-    func addCustomFish(appearanceID: UUID) {
+    func addCustomFish(appearanceID: UUID, name: String? = nil) {
         guard !fish.contains(where: { $0.customAppearanceID == appearanceID }) else { return }
         let scale = max(size.x / 1600, size.y / 1000)
         let length = generator.float(in: 48...76) * scale
@@ -37,11 +37,16 @@ final class OceanSimulation {
         fish.append(FishState(id: (fish.map(\.id).max() ?? -1) + 1, species: .koi,
             position: position, velocity: direction * generator.float(in: 34...52) * scale,
             heading: angle, length: length, depth: generator.float(in: 0.25...0.8),
-            phase: generator.float(in: 0...(2 * .pi)), panic: 0, customAppearanceID: appearanceID))
+            phase: generator.float(in: 0...(2 * .pi)), panic: 0, customAppearanceID: appearanceID, name: name))
     }
 
     func removeFish(identity: FishIdentity) {
         fish.removeAll { $0.identity == identity }
+    }
+
+    func renameFish(identity: FishIdentity, name: String?) {
+        guard let index = fish.firstIndex(where: { $0.identity == identity }) else { return }
+        fish[index].name = name
     }
 
     func update(deltaTime: Float) {
