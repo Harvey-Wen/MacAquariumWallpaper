@@ -66,21 +66,26 @@ final class OceanSimulation {
             lastMotionTime = elapsedTime
             return
         }
-        guard step > 0.5, let lastMotionPosition,
+        guard step > 0.5 else { return }
+        // Fish react along every accepted segment, independently of the wave budget.
+        // Distance-weighted impulses keep the response stable across pointer sample rates.
+        let travel = position - previous
+        for index in fish.indices {
+            let along = min(1, max(0, simd_dot(fish[index].position - previous, travel) / (step * step)))
+            let offset = fish[index].position - (previous + travel * along)
+            let distance = simd_length(offset)
+            let influence = max(0, 1 - distance / 150)
+            guard influence > 0 else { continue }
+            fish[index].panic = max(fish[index].panic, influence * 0.65)
+            fish[index].velocity = limited(fish[index].velocity
+                + unit(offset, fallback: perpendicular(fish[index].velocity)) * (step * 2.4 * influence), to: 175)
+        }
+        guard let lastMotionPosition,
               simd_distance(position, lastMotionPosition) >= 11,
               elapsedTime - lastMotionTime >= 0.12 else { return }
         self.lastMotionPosition = position
         lastMotionTime = elapsedTime
         addRipple(at: position, strength: 0.34, source: .motion, travel: limited(position - lastMotionPosition, to: 140))
-        for index in fish.indices {
-            let offset = fish[index].position - position
-            let distance = simd_length(offset)
-            let influence = max(0, 1 - distance / 105)
-            guard influence > 0 else { continue }
-            fish[index].panic = max(fish[index].panic, influence * 0.18)
-            fish[index].velocity = limited(fish[index].velocity
-                + unit(offset, fallback: perpendicular(fish[index].velocity)) * (12 * influence), to: 175)
-        }
     }
 
     func resetPointer() {
@@ -336,8 +341,8 @@ final class OceanSimulation {
     private static func makeFish(in size: SIMD2<Float>, generator: inout SeededGenerator) -> [FishState] {
         let scale = max(size.x / 1600, size.y / 1000)
         var result: [FishState] = []
-        result.reserveCapacity(30)
-        for id in 0..<30 {
+        result.reserveCapacity(60)
+        for id in 0..<60 {
             let length = generator.float(in: 48...76) * scale
             var position = PondGeometry.point(for: SIMD2(0.5, 0.5), size: size)
             for _ in 0..<100 {
