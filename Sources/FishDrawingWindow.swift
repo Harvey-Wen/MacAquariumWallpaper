@@ -306,8 +306,20 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 }
 
 final class FishDrawingCanvas: NSView {
-    var baseColor = FishColor(red: 1, green: 1, blue: 1) { didSet { needsDisplay = true } }
-    var strokes: [FishStroke] = [] { didSet { needsDisplay = true } }
+    var baseColor = FishColor(red: 1, green: 1, blue: 1) { didSet { inkLayer = nil; needsDisplay = true } }
+    var strokes: [FishStroke] = [] {
+        didSet {
+            // Completing one stroke extends the cached layer. Undo, replacement and
+            // clear rebuild from the authoritative editable stroke data.
+            if strokes.count != oldValue.count + 1 || !strokes.starts(with: oldValue) { inkLayer = nil }
+            needsDisplay = true
+        }
+    }
+    private var inkLayer: CGLayer?
+    private var inkSize = CGSize.zero
+    private var inkScale = CGSize.zero
+    private var cachedStrokeCount = 0
+    private(set) var inkCacheRebuilds = 0
     var onStroke: ((FishStroke) -> Void)?
     var currentTool: (() -> (FishColor, Float, Bool)?)?
     private(set) var activeStroke: FishStroke?
@@ -367,7 +379,7 @@ final class FishDrawingCanvas: NSView {
         context.addPath(path)
         context.clip()
         context.beginTransparencyLayer(auxiliaryInfo: nil)
-        for stroke in strokes { draw(stroke, in: context) }
+        drawCompletedStrokes(in: context)
         if let activeStroke { draw(activeStroke, in: context) }
         context.endTransparencyLayer()
         context.restoreGState()
@@ -376,6 +388,27 @@ final class FishDrawingCanvas: NSView {
         context.setLineWidth(1)
         context.strokePath()
         drawEyes(in: context)
+    }
+
+    private func drawCompletedStrokes(in context: CGContext) {
+        let transform = context.ctm
+        let scale = CGSize(width: hypot(transform.a, transform.b), height: hypot(transform.c, transform.d))
+        if inkLayer == nil || inkSize != bounds.size || inkScale != scale {
+            inkLayer = CGLayer(context, size: bounds.size, auxiliaryInfo: nil)
+            inkSize = bounds.size
+            inkScale = scale
+            cachedStrokeCount = 0
+            inkCacheRebuilds += 1
+        }
+        guard let inkLayer, let ink = inkLayer.context else {
+            for stroke in strokes { draw(stroke, in: context) }
+            return
+        }
+        for stroke in strokes.dropFirst(cachedStrokeCount) { draw(stroke, in: ink) }
+        cachedStrokeCount = strokes.count
+        // Keep cached and active ink inside one transparency layer: an active
+        // eraser clears old ink and reveals the current body color beneath it.
+        context.draw(inkLayer, at: .zero)
     }
 
     private func draw(_ stroke: FishStroke, in context: CGContext) {
