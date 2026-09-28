@@ -52,6 +52,7 @@ import MetalKit
         let pausedLeaves = controller.simulation.leaves.map(\.position)
         if !controller.reducedMotion { check(!pausedLeaves.isEmpty, "falling leaf reached desktop scene") }
         let pausedWeatherAmount = controller.simulation.frame(waterStrength: 0.45).weatherAmount
+        let pausedPrecipitation = controller.simulation.frame(waterStrength: 0.45).precipitation
         controller.paused = true; advance()
         let motionBeforePause = controller.simulation.ripples.filter { $0.source == .motion }.count
         controller.simulation.trackPointer(pointerCenter + SIMD2(15, 0))
@@ -81,6 +82,8 @@ import MetalKit
             previousBackdrop = nextBackdrop; previousPNG = nextPNG
         }
         controller.weather = .sunny
+        check(controller.simulation.frame(waterStrength: 0.45).precipitation == pausedPrecipitation,
+              "paused weather changes preserve every airborne particle")
         check(!controller.input.enabled, "pause stops input")
         controller.enabled = false
         check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == before[0], "disable restores original image")

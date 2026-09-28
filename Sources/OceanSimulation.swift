@@ -417,6 +417,14 @@ final class OceanSimulation {
         leaves.removeAll { $0.age >= 16 }
     }
 
+    private func randomWaterPoint(margin: Float) -> SIMD2<Float>? {
+        for _ in 0..<24 {
+            let point = SIMD2(generator.float(in: 0...size.x), generator.float(in: 0...size.y))
+            if PondGeometry.contains(point, size: size, margin: margin) { return point }
+        }
+        return nil
+    }
+
     private static func makeFish(in size: SIMD2<Float>, generator: inout SeededGenerator) -> [FishState] {
         let scale = max(size.x / 1600, size.y / 1000)
         var result: [FishState] = []
