@@ -70,7 +70,7 @@ private enum SimulationTests {
     private static func populationAndShoreline() throws {
         let a = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
         let b = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
-        try expect(a.fish.count == 60 && Set(a.fish.map(\.id)).count == 60, "pond needs 60 uniquely identified koi")
+        try expect(a.fish.count == 30 && Set(a.fish.map(\.id)).count == 30, "pond needs 30 uniquely identified koi")
         try expect(a.fish.allSatisfy { $0.species == .koi }, "all fish should be koi")
         try expect(a.fish.map(\.position) == b.fish.map(\.position), "seed must reproduce positions")
         try expect(a.fish.allSatisfy { PondGeometry.contains($0.position, size: a.size, margin: $0.length * 0.5) }, "initial fish need whole-body clearance")
@@ -470,7 +470,7 @@ private enum SimulationTests {
         let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 5)
         sim.update(deltaTime: 0.25)
         let frame = sim.frame(waterStrength: 0.7)
-        try expect(frame.size == sim.size && frame.fish.count == 60, "frame exposes the doubled population")
+        try expect(frame.size == sim.size && frame.fish.count == 30, "frame exposes the restored population")
         try expect(abs(frame.time - 0.25) < 0.0001 && frame.waterStrength == 0.7, "frame preserves time and strength")
         try expect(frame.leaves.count == sim.leaves.count && frame.weatherAmount == 0, "frame exposes leaves and weather")
     }
