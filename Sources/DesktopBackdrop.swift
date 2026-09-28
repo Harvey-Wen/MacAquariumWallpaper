@@ -20,6 +20,18 @@ import Darwin
     private var records: [Record] = []
     private var operationActive = false
     private var recovered = false
+    private(set) var lastRecoveryResult = "notAttempted"
+    private(set) var lastFailure: String?
+    private var missingOriginal = false
+    var ownershipState: String {
+        if lockFD < 0 { return "released" }
+        if missingOriginal { return "missingOriginal" }
+        if records.contains(where: { $0.pending == true }) { return "pending" }
+        if !records.isEmpty { return "owned" }
+        if !overridden.isEmpty { return "externalChoice" }
+        return "idle"
+    }
+    var journalRecordCount: Int { records.count }
     private var overridden = Set<String>()
     private var appliedKey: String?
     private var journal: URL { directory.appendingPathComponent("ownership.json") }
@@ -84,7 +96,12 @@ import Darwin
     private func clean() throws {
         try requireOwnership()
         // Even an orphaned active pond image must survive when its original is unknown.
-        let active = NSScreen.screens.compactMap(readImage)
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return }
+        let active = try screens.map { screen -> URL in
+            guard let current = readImage(screen) else { throw failure("无法确认当前桌面背景，保留生成图片") }
+            return current
+        }
         let retained = Set((records.flatMap(\.images) + active).map { $0.resolvingSymlinksInPath().path })
         for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         where url.lastPathComponent.hasPrefix("pond-") && url.pathExtension == "png" && !retained.contains(url.resolvingSymlinksInPath().path) {
@@ -92,11 +109,24 @@ import Darwin
         }
     }
 
-    private func restore(_ record: Record, on screen: NSScreen) async throws {
+    @discardableResult private func restore(_ saved: Record, on screen: NSScreen) async throws -> Bool {
+        var record = saved
         guard let current = readImage(screen) else { throw failure("无法读取当前桌面背景，保留恢复记录") }
         // A timed-out request may still be queued in the system. Reassert the
         // original even if readback has not yet advanced to the pending image.
-        if record.images.contains(current) || (record.pending == true && current == record.original) {
+        let owned = record.images.contains(current) || (record.pending == true && current == record.original)
+        if !owned && record.pending == true {
+            // The user chose another image while our earlier request was still
+            // queued. Persist that explicit choice, then reassert it after the
+            // pending request; a crash here must recover the user's newer choice.
+            guard current.resolvingSymlinksInPath().deletingLastPathComponent() != directory,
+                  let options = readOptions(screen) else { throw failure("无法确认用户新背景，保留待恢复记录") }
+            let raw = Dictionary(uniqueKeysWithValues: options.map { ($0.key.rawValue, $0.value) })
+            record.original = current
+            record.options = try NSKeyedArchiver.archivedData(withRootObject: raw, requiringSecureCoding: true)
+            try save(records.filter { $0.display != record.display } + [record])
+        }
+        if owned || record.pending == true {
             let classes: [AnyClass] = [NSDictionary.self, NSString.self, NSNumber.self, NSColor.self, NSArray.self, NSData.self, NSURL.self]
             guard let raw = try NSKeyedUnarchiver.unarchivedObject(ofClasses: classes, from: record.options) as? [String: Any] else {
                 throw failure("无法读取原桌面选项，保留恢复记录")
@@ -107,6 +137,7 @@ import Darwin
         }
         try save(records.filter { $0.display != record.display })
         try clean()
+        return owned
     }
 
     /// Missing displays retain their journal entries until they become available again.
@@ -125,82 +156,105 @@ import Darwin
     private func restoreRecords(screens: [NSScreen] = NSScreen.screens) async throws {
         appliedKey = nil
         overridden.removeAll()
-        for record in records {
-            if let screen = screens.first(where: { Self.displayIdentifier($0) == record.display }) {
-                try await restore(record, on: screen)
+        var restored = 0, external = 0
+        do {
+            let ownedImages = Set(records.flatMap(\.images))
+            missingOriginal = screens.compactMap(readImage).contains {
+                $0.resolvingSymlinksInPath().deletingLastPathComponent() == directory && !ownedImages.contains($0)
             }
+            guard !missingOriginal else {
+                lastRecoveryResult = "missingOriginal"
+                throw failure("池塘背景缺少原背景恢复记录，未执行恢复")
+            }
+            for record in records {
+                if let screen = screens.first(where: { Self.displayIdentifier($0) == record.display }) {
+                    if try await restore(record, on: screen) { restored += 1 } else { external += 1 }
+                }
+            }
+            try clean()
+            lastRecoveryResult = !records.isEmpty ? "waitingForDisplay" :
+                restored > 0 ? "restored" : external > 0 ? "externalChoicePreserved" : "nothingToRestore"
+        } catch {
+            if !missingOriginal { lastRecoveryResult = "failed" }
+            lastFailure = error.localizedDescription
+            throw error
         }
-        try clean()
     }
 
     func apply(screen: NSScreen, key: String, isCurrent: () -> Bool = { true },
                render: (URL) async throws -> Void) async throws {
         try beginOperation()
         defer { operationActive = false }
-        if !recovered {
-            try await restoreRecords()
-            recovered = true
-        }
-        let identifier = Self.displayIdentifier(screen)
-        // Moving the primary display restores any formerly affected display first.
-        for record in records where record.display != identifier {
-            if let previous = NSScreen.screens.first(where: { Self.displayIdentifier($0) == record.display }) {
-                try await restore(record, on: previous)
+        do {
+            if !recovered {
+                try await restoreRecords()
+                recovered = true
             }
-        }
-        guard !overridden.contains(identifier) else { return }
-        guard let current = readImage(screen) else { throw failure("无法备份当前桌面背景") }
-        var record: Record
-        if let existing = records.first(where: { $0.display == identifier }) {
-            // A timed-out system request can still complete. Do not discard its
-            // ownership or enqueue another replacement before explicit restoration.
-            guard existing.pending != true else {
-                throw failure("上次背景更改尚待恢复，请先关闭再开启池塘")
+            let identifier = Self.displayIdentifier(screen)
+            // Moving the primary display restores any formerly affected display first.
+            for record in records where record.display != identifier {
+                if let previous = NSScreen.screens.first(where: { Self.displayIdentifier($0) == record.display }) {
+                    try await restore(record, on: previous)
+                }
             }
-            guard existing.images.contains(current) else {
+            guard !overridden.contains(identifier) else { return }
+            guard let current = readImage(screen) else { throw failure("无法备份当前桌面背景") }
+            var record: Record
+            if let existing = records.first(where: { $0.display == identifier }) {
+                // A timed-out system request can still complete. Do not discard its
+                // ownership or enqueue another replacement before explicit restoration.
+                guard existing.pending != true else {
+                    throw failure("上次背景更改尚待恢复，请先关闭再开启池塘")
+                }
+                guard existing.images.contains(current) else {
+                    overridden.insert(identifier)
+                    try await restore(existing, on: screen) // Releases ownership without changing the user's image.
+                    appliedKey = nil
+                    return
+                }
+                if appliedKey == key { return }
+                record = existing
+                record.images = [current]
+                try save(records.filter { $0.display != identifier } + [record])
+                try clean()
+            } else {
+                guard current.resolvingSymlinksInPath().deletingLastPathComponent() != directory else {
+                    missingOriginal = true
+                    throw failure("池塘背景缺少原背景恢复记录，未再次替换")
+                }
+                guard let options = readOptions(screen) else { throw failure("无法备份原桌面选项") }
+                let raw = Dictionary(uniqueKeysWithValues: options.map { ($0.key.rawValue, $0.value) })
+                let data = try NSKeyedArchiver.archivedData(withRootObject: raw, requiringSecureCoding: true)
+                record = Record(display: identifier, original: current, options: data, images: [], pending: false)
+            }
+            let next = directory.appendingPathComponent("pond-\(UUID().uuidString).png")
+            do { try await render(next); try Task.checkCancellation() }
+            catch { try? FileManager.default.removeItem(at: next); throw error }
+            guard readImage(screen) == current else {
                 overridden.insert(identifier)
-                try await restore(existing, on: screen) // Releases ownership without changing the user's image.
-                appliedKey = nil
+                try FileManager.default.removeItem(at: next)
+                throw failure("生成期间桌面背景已改变，保留你的选择")
+            }
+            guard isCurrent() else {
+                try FileManager.default.removeItem(at: next)
                 return
             }
-            if appliedKey == key { return }
-            record = existing
-            record.images = [current]
+            record.images.append(next)
+            record.pending = true
+            // Persist before calling the system: a crash on either side can still be undone.
+            do { try save(records.filter { $0.display != identifier } + [record]) }
+            catch { try? FileManager.default.removeItem(at: next); throw error }
+            try setImage(next, screen, [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
+            guard try await waitForImage(next, screen: screen) else { throw failure("系统未确认池塘桌面背景") }
+            record.images = [next]
+            record.pending = false
             try save(records.filter { $0.display != identifier } + [record])
+            appliedKey = key
             try clean()
-        } else {
-            guard current.deletingLastPathComponent() != directory else {
-                throw failure("池塘背景缺少原背景恢复记录，未再次替换")
-            }
-            guard let options = readOptions(screen) else { throw failure("无法备份原桌面选项") }
-            let raw = Dictionary(uniqueKeysWithValues: options.map { ($0.key.rawValue, $0.value) })
-            let data = try NSKeyedArchiver.archivedData(withRootObject: raw, requiringSecureCoding: true)
-            record = Record(display: identifier, original: current, options: data, images: [], pending: false)
+        } catch {
+            lastFailure = error.localizedDescription
+            throw error
         }
-        let next = directory.appendingPathComponent("pond-\(UUID().uuidString).png")
-        do { try await render(next); try Task.checkCancellation() }
-        catch { try? FileManager.default.removeItem(at: next); throw error }
-        guard readImage(screen) == current else {
-            overridden.insert(identifier)
-            try FileManager.default.removeItem(at: next)
-            throw failure("生成期间桌面背景已改变，保留你的选择")
-        }
-        guard isCurrent() else {
-            try FileManager.default.removeItem(at: next)
-            return
-        }
-        record.images.append(next)
-        record.pending = true
-        // Persist before calling the system: a crash on either side can still be undone.
-        do { try save(records.filter { $0.display != identifier } + [record]) }
-        catch { try? FileManager.default.removeItem(at: next); throw error }
-        try setImage(next, screen, [.imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue, .allowClipping: true])
-        guard try await waitForImage(next, screen: screen) else { throw failure("系统未确认池塘桌面背景") }
-        record.images = [next]
-        record.pending = false
-        try save(records.filter { $0.display != identifier } + [record])
-        appliedKey = key
-        try clean()
     }
 
     // NSWorkspace returns before its read API catches up (observed on macOS 15).

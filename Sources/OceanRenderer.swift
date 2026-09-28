@@ -70,14 +70,29 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let waterDistance: MTLTexture
     private let fallbackDrawing: MTLTexture
     private var drawings: [UUID: MTLTexture] = [:]
-    private(set) var lastGPUSeconds: Double = 0
+    let displayGPUTimings = PerformanceTimings()
+    let offscreenGPUTimings = PerformanceTimings()
+    let exportSubmissionTimings = PerformanceTimings()
+    var lastGPUSeconds: Double { offscreenGPUTimings.latest / 1000 }
     private let uploads = (0..<3).map { _ in PrecipitationUpload() }
+    private let emptyUpload = PrecipitationUpload()
+    private weak var deferredView: MTKView?
     private(set) var particleBufferAllocations = 0
     private(set) var skippedGPUFrames = 0
 
-    private func claimUpload(for command: MTLCommandBuffer) -> PrecipitationUpload? {
+    private func claimUpload(for command: MTLCommandBuffer, frame: OceanFrame) -> PrecipitationUpload? {
+        if frame.precipitation.isEmpty && frame.surfaceSnow.isEmpty { return emptyUpload }
         guard let slot = uploads.first(where: { $0.claim() }) else { return nil }
-        command.addCompletedHandler { _ in slot.release() }
+        command.addCompletedHandler { [weak self] _ in
+            slot.release()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let view = self.deferredView else { return }
+                self.deferredView = nil
+                // A paused scene may have received several edits while all slots
+                // were busy. Present its latest state once, without advancing time.
+                if view.window?.isVisible == true { view.draw() }
+            }
+        }
         return slot
     }
 
@@ -216,9 +231,16 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
               let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer() else { return }
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        guard let upload = claimUpload(for: command) else { skippedGPUFrames += 1; return }
+        guard let upload = claimUpload(for: command, frame: frame) else {
+            skippedGPUFrames += 1
+            deferredView = view
+            return
+        }
+        deferredView = nil
         encode(frame, pass: pass, command: command, upload: upload)
-        command.addCompletedHandler { [weak self] completed in self?.lastGPUSeconds = completed.gpuEndTime - completed.gpuStartTime }
+        command.addCompletedHandler { [displayGPUTimings] completed in
+            if completed.status == .completed { displayGPUTimings.record((completed.gpuEndTime - completed.gpuStartTime) * 1000) }
+        }
         command.present(drawable)
         command.commit()
     }
@@ -378,7 +400,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         command.commit()
         command.waitUntilCompleted()
         if let error = command.error { throw error }
-        lastGPUSeconds = command.gpuEndTime - command.gpuStartTime
+        offscreenGPUTimings.record((command.gpuEndTime - command.gpuStartTime) * 1000)
         return Self.readPixels(output, width: width, height: height)
     }
 
@@ -396,7 +418,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        guard let upload = claimUpload(for: command) else { throw OceanRenderError.unavailable("GPU帧仍在处理中，请稍后重试。") }
+        guard let upload = claimUpload(for: command, frame: frame) else { throw OceanRenderError.unavailable("GPU帧仍在处理中，请稍后重试。") }
         encode(frame, pass: pass, command: command, upload: upload, includeEnvironment: includeEnvironment, preview: preview)
         return (command, output)
     }
@@ -417,11 +439,16 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     /// Encode on the renderer's owner thread; GPU waiting, conversion and PNG I/O never block it.
     @MainActor func writePNGAsync(frame: OceanFrame, width: Int, height: Int, to url: URL) async throws {
-        while !uploads.contains(where: { $0.available }) { try await Task.sleep(nanoseconds: 1_000_000) }
+        while (!frame.precipitation.isEmpty || !frame.surfaceSnow.isEmpty) && !uploads.contains(where: { $0.available }) {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let submitted = ProcessInfo.processInfo.systemUptime
         let (command, output) = try readbackCommand(frame: frame, width: width, height: height)
+        exportSubmissionTimings.record((ProcessInfo.processInfo.systemUptime - submitted) * 1000)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            command.addCompletedHandler { completed in
+            command.addCompletedHandler { [offscreenGPUTimings] completed in
                 if let error = completed.error { continuation.resume(throwing: error); return }
+                offscreenGPUTimings.record((completed.gpuEndTime - completed.gpuStartTime) * 1000)
                 DispatchQueue.global(qos: .utility).async {
                     do {
                         let bytes = Self.readPixels(output, width: width, height: height)

@@ -45,6 +45,10 @@ final class TransparentMetalView: MTKView {
     private var previousTime = ProcessInfo.processInfo.systemUptime
     private var lastDiagnostic = 0.0
     private var displayID: CGDirectDisplayID = 0
+    private let cpuTimings = PerformanceTimings()
+    private let frameIntervals = PerformanceTimings()
+    private let backdropExportTimings = PerformanceTimings()
+    private(set) var backdropLastFailure: String?
     private var backdropRevision = 0
     private var backdropTask: Task<Void, Never>?
     private var stopping = false
@@ -201,22 +205,30 @@ final class TransparentMetalView: MTKView {
                         frame.atmosphere = weather.atmosphere
                         try await backdrop.apply(screen: screen, key: key,
                             isCurrent: { self.backdropRevision == revision && self.enabled && !self.stopping }) { url in
+                            let started = ProcessInfo.processInfo.systemUptime
+                            defer { self.backdropExportTimings.record((ProcessInfo.processInfo.systemUptime - started) * 1000) }
                             try await self.renderer.writePNGAsync(frame: frame, width: Int(pixels.width), height: Int(pixels.height), to: url)
                         }
                     } else {
                         try await backdrop.restoreAll()
                     }
                     // A no-op restoration is not evidence that an earlier failure recovered.
-                    if enabled && !stopping && revision == backdropRevision { backdropError = nil }
+                    if revision == backdropRevision && (backdrop.ownershipState == "owned" || backdrop.ownershipState == "externalChoice" ||
+                        backdrop.lastRecoveryResult == "restored" || backdrop.lastRecoveryResult == "externalChoicePreserved") {
+                        backdropError = nil
+                    }
                 } catch {
                     backdropError = error.localizedDescription
+                    backdropLastFailure = error.localizedDescription
                     NSLog("池塘桌面背景：%@", error.localizedDescription)
                 }
                 writeDiagnostics()
                 if revision == backdropRevision { break }
             }
             backdropTask = nil
-            if stopping { backdrop.releaseOwnership(); stopCompletion?(); stopCompletion = nil }
+            if stopping { backdrop.releaseOwnership() }
+            writeDiagnostics()
+            if stopping { stopCompletion?(); stopCompletion = nil }
         }
     }
 
@@ -252,6 +264,7 @@ final class TransparentMetalView: MTKView {
         let start = ProcessInfo.processInfo.systemUptime
         // Preserve elapsed time through ordinary slow frames; the simulation substeps it.
         // Lifecycle transitions reset previousTime, so sleep never produces a large jump.
+        frameIntervals.record((start - previousTime) * 1000)
         let delta = Float(min(start - previousTime, 1.0))
         previousTime = start
         if input.enabled, let screen = NSScreen.screens.first { input.refresh(screen: screen) }
@@ -259,7 +272,9 @@ final class TransparentMetalView: MTKView {
         simulation.trackPointer(input.hover())
         render()
         frameCount += 1
-        meanFrameMS += ((ProcessInfo.processInfo.systemUptime - start) * 1000 - meanFrameMS) / Double(frameCount)
+        let elapsedMS = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        cpuTimings.record(elapsedMS)
+        meanFrameMS += (elapsedMS - meanFrameMS) / Double(frameCount)
         if start - lastDiagnostic >= 1 { lastDiagnostic = start; writeDiagnostics() }
     }
 
@@ -306,8 +321,24 @@ final class TransparentMetalView: MTKView {
     func writeDiagnostics() {
         guard let diagnosticURL else { return }
         let frame = simulation.frame(waterStrength: 0.45)
+        let intervalMetrics = frameIntervals.snapshot
         let dictionary: [String: Any] = [
             "backdropError": backdropError ?? "",
+            "backdropLastFailure": backdropLastFailure ?? backdrop.lastFailure ?? "",
+            "backdropOwnership": backdrop.ownershipState,
+            "backdropJournalRecords": backdrop.journalRecordCount,
+            "backdropLastRecovery": backdrop.lastRecoveryResult,
+            "backdropWorkPending": backdropTask != nil,
+            "performance": ["displayCPU": cpuTimings.snapshot, "displayGPU": renderer.displayGPUTimings.snapshot,
+                "frameIntervals": intervalMetrics, "offscreenGPU": renderer.offscreenGPUTimings.snapshot,
+                "backgroundExport": backdropExportTimings.snapshot, "exportMainThreadSubmission": renderer.exportSubmissionTimings.snapshot],
+            "longFrameCount": intervalMetrics["over50MS"] as? Int ?? 0,
+            "metalAllocatedBytes": renderer.allocatedBytes,
+            "desktopTargetAllocations": renderer.targetAllocations,
+            "previewTargetAllocations": renderer.previewTargetAllocations,
+            "particleBufferAllocations": renderer.particleBufferAllocations,
+            "skippedGPUFrames": renderer.skippedGPUFrames,
+            "geometryQueries": input.geometryQueryCount,
             "status": status, "frames": frameCount, "meanCPUFrameMS": meanFrameMS,
             "enabled": enabled, "paused": paused, "interactive": interactive,
             "visible": window.isVisible, "mousePassThrough": window.ignoresMouseEvents,

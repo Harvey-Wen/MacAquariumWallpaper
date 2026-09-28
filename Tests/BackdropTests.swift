@@ -19,6 +19,13 @@ import AppKit
                 exit(0)
             } catch { exit(23) }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--crash-child") {
+            var current = URL(fileURLWithPath: "/original-test.heic")
+            let owner = try DesktopBackdrop(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1]),
+                readImage: { _ in current }, readOptions: { _ in [:] }, setImage: { url, _, _ in current = url })
+            try await owner.apply(screen: NSScreen.screens[0], key: "crash") { try Data("crash".utf8).write(to: $0) }
+            exit(37) // No restoration or deinit: the OS alone releases this process's lock.
+        }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pond-lock-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let screen = NSScreen.screens[0]
@@ -58,15 +65,42 @@ import AppKit
         let untouched = try Data(contentsOf: journal)
         precondition(bJournal == untouched && FileManager.default.fileExists(atPath: bImage.path))
         try await b.restoreAll()
+        precondition(b.lastRecoveryResult == "restored")
         precondition(current == original)
         b.releaseOwnership()
+        let crashDirectory = directory.appendingPathComponent("crash")
+        let crash = Process()
+        crash.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        crash.arguments = ["--crash-child", crashDirectory.path]
+        try crash.run(); crash.waitUntilExit()
+        precondition(crash.terminationStatus == 37)
+        let crashRecords = try JSONDecoder().decode([DesktopBackdrop.Record].self, from: Data(contentsOf: crashDirectory.appendingPathComponent("ownership.json")))
+        current = crashRecords[0].images[0]
+        let recovered = try DesktopBackdrop(directory: crashDirectory, readImage: { _ in current }, readOptions: { _ in [:] }, setImage: { url, _, _ in current = url })
+        try await recovered.restoreAll()
+        precondition(current == original && recovered.lastRecoveryResult == "restored", "OS releases dead process ownership and next process recovers its journal")
+        recovered.releaseOwnership()
         // Missing original metadata must never delete the active orphan or invent a backup.
         let orphan = directory.appendingPathComponent("pond-orphan.png")
         try Data("orphan".utf8).write(to: orphan)
         current = orphan
         let c = try helper()
+        precondition(c.lastRecoveryResult == "notAttempted")
         do { try await c.apply(screen: screen, key: "C") { _ in }; preconditionFailure("missing backup") } catch { }
         precondition(FileManager.default.fileExists(atPath: orphan.path))
+        precondition(c.lastRecoveryResult == "missingOriginal" && c.ownershipState == "missingOriginal")
+        precondition(c.lastFailure != nil)
+        current = original
+        try await c.restoreAll()
+        precondition(c.lastRecoveryResult == "nothingToRestore" && c.lastFailure != nil, "empty journal is not successful recovery and never erases failure history")
+        let unreadableDirectory = directory.appendingPathComponent("unreadable")
+        let unreadable = try DesktopBackdrop(directory: unreadableDirectory, readImage: { _ in nil }, readOptions: { _ in [:] }, setImage: { _, _, _ in })
+        let unknownActive = unreadableDirectory.appendingPathComponent("pond-unknown.png")
+        try Data("unknown".utf8).write(to: unknownActive)
+        do { try await unreadable.restoreAll() } catch { }
+        guard FileManager.default.fileExists(atPath: unknownActive.path) else {
+            throw NSError(domain: "Regression", code: 1, userInfo: [NSLocalizedDescriptionKey: "unreadable current wallpaper must prevent cleanup of a possibly active image"])
+        }
         try await asyncPaths(screen: screen)
         print("PASS: competing owner rejected before journal read, active image and backup preserved")
     }
@@ -140,6 +174,30 @@ import AppKit
         while queued != original { await Task.yield() }
         current = original
         try await restoring.value
+        queued = nil
+        let cancelledConfirmation = Task { @MainActor in
+            try await delayed.apply(screen: screen, key: "cancel-confirmation") { try Data("pending".utf8).write(to: $0) }
+        }
+        while queued == nil { await Task.yield() }
+        let pendingFile = queued!
+        cancelledConfirmation.cancel()
+        do { try await cancelledConfirmation.value; preconditionFailure("cancelled confirmation") } catch is CancellationError { }
+        precondition(delayed.ownershipState == "pending" && FileManager.default.fileExists(atPath: pendingFile.path), "cancellation after system request retains durable undo")
+        try await delayed.restoreAll()
+        precondition(queued == original && delayed.lastRecoveryResult == "restored")
+        queued = nil
+        let pendingOverride = Task { @MainActor in
+            try await delayed.apply(screen: screen, key: "override-pending") { try Data("pending".utf8).write(to: $0) }
+        }
+        while queued == nil { await Task.yield() }
+        pendingOverride.cancel()
+        do { try await pendingOverride.value } catch is CancellationError { }
+        current = choice
+        try await delayed.restoreAll()
+        guard queued == choice else {
+            throw NSError(domain: "Regression", code: 1, userInfo: [NSLocalizedDescriptionKey: "late system request must be superseded by the user's current choice before releasing recovery"])
+        }
+        precondition(current == choice && delayed.lastRecoveryResult == "externalChoicePreserved")
         print("PASS: stale export, reentrancy, cancellation, external change, late timeout and nonblocking confirmation (\(heartbeats) heartbeats)")
     }
 

@@ -43,14 +43,33 @@ import MetalKit
         }
         precondition(renderer.particleBufferAllocations <= 3, "at most three in-flight upload buffers")
         var beats = 0
+        let intervals = PerformanceTimings()
+        var previous = ProcessInfo.processInfo.systemUptime
         let heartbeat = Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000)
+                let now = ProcessInfo.processInfo.systemUptime
+                intervals.record((now - previous) * 1000)
+                previous = now
                 beats += 1
             }
         }
+        let exportStart = ProcessInfo.processInfo.systemUptime
         try await renderer.writePNGAsync(frame: frames[0], width: 3024, height: 1964, to: root.appendingPathComponent("full.png"))
+        let exportMS = (ProcessInfo.processInfo.systemUptime - exportStart) * 1000
         heartbeat.cancel()
+        await heartbeat.value
+        print("FULL_ASYNC_EXPORT \(exportMS) ms; MAIN_ACTOR_INTERVAL \(intervals.snapshot)")
+        do {
+            try await renderer.writePNGAsync(frame: frames[0], width: 128, height: 64, to: root)
+            preconditionFailure("writing PNG to a directory must fail")
+        } catch { }
+        do {
+            try await renderer.writePNGAsync(frame: frames[0], width: 0, height: 64, to: root)
+            preconditionFailure("invalid export dimensions must fail")
+        } catch { }
+        let submission = renderer.exportSubmissionTimings.snapshot
+        print("EXPORT_MAIN_SUBMISSION \(submission)")
         precondition(beats > 10, "full-size export leaves main actor responsive")
         print("PASS: 6 overlapping exports exactly match PNG snapshots; bounded GPU uploads; full export \(beats) main-actor heartbeats")
     }

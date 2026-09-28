@@ -187,7 +187,13 @@ import MetalKit
         let coalesced = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"), backdrop: backdrop("coalesced"), drawingStore: FishDrawingStore(directory: root.appendingPathComponent("coalesced-fish")))
         coalesced.start()
         let setsBefore = backdropSets
-        for id in 0..<10 { try coalesced.removeFish(identity: .builtIn(id)) }
+        var maxChangeMS = 0.0
+        for id in 0..<10 {
+            let started = ProcessInfo.processInfo.systemUptime
+            try coalesced.removeFish(identity: .builtIn(id))
+            maxChangeMS = max(maxChangeMS, (ProcessInfo.processInfo.systemUptime - started) * 1000)
+        }
+        print("RAPID_FISH_EDITS max synchronous response \(maxChangeMS) ms")
         check(coalesced.simulation.fish.count == 20, "batch changes reach simulation synchronously")
         check(backdropSets == setsBefore, "fish changes never synchronously set wallpaper")
         await coalesced.waitForBackdrop()
@@ -196,6 +202,26 @@ import MetalKit
         coalesced.stop()
         await coalesced.waitForBackdrop()
         check(current == original && backdropSets == setsBefore + 2, "exit invalidates queued export then restores")
+        let inFlight = try DesktopController(shaderURL: URL(fileURLWithPath: "Resources/Ocean.metal"), backdrop: backdrop("in-flight"), drawingStore: FishDrawingStore(directory: root.appendingPathComponent("in-flight-fish")))
+        let beforeInFlight = backdropSets
+        inFlight.paused = true
+        inFlight.start()
+        while inFlight.renderer.exportSubmissionTimings.latest == 0 { await Task.yield() }
+        try inFlight.removeFish(identity: .builtIn(0))
+        await inFlight.waitForBackdrop()
+        check(backdropSets == beforeInFlight + 1, "a request arriving during export supersedes the old export")
+        let expectedPNG = root.appendingPathComponent("latest-fish.png")
+        let pixels = NSScreen.screens[0].convertRectToBacking(NSScreen.screens[0].frame).size
+        try inFlight.renderer.writePNG(frame: inFlight.simulation.frame(waterStrength: 0.45), width: Int(pixels.width), height: Int(pixels.height), to: expectedPNG)
+        let latestPixels = try Data(contentsOf: current)
+        let expectedPixels = try Data(contentsOf: expectedPNG)
+        check(latestPixels == expectedPixels, "only the latest fish snapshot reaches the background")
+        let submissions = inFlight.renderer.exportSubmissionTimings.snapshot["totalSamples"] as! Int
+        try inFlight.removeFish(identity: .builtIn(1))
+        while inFlight.renderer.exportSubmissionTimings.snapshot["totalSamples"] as! Int == submissions { await Task.yield() }
+        inFlight.stop()
+        await inFlight.waitForBackdrop()
+        check(current == original && backdropSets == beforeInFlight + 2, "exit during GPU export discards stale PNG then restores once")
         print("PASS: \(checks) custom fish desktop integration checks (isolated storage and backdrop)")
     }
 }

@@ -24,15 +24,20 @@ import MetalKit
         if realWallpaper && !NSRunningApplication.runningApplications(withBundleIdentifier: "local.macaquariumwallpaper.app").isEmpty {
             throw NSError(domain: "DesktopTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先正常退出池塘，再运行真实壁纸验收"])
         }
-        let beforeOptions = screens.map { NSWorkspace.shared.desktopImageOptions(for: $0)! }
-        let before = screens.map { NSWorkspace.shared.desktopImageURL(for: $0) }
+        let systemBackdrop = try realWallpaper ? DesktopBackdrop() : nil
+        let beforeOptions: [[NSWorkspace.DesktopImageOptionKey: Any]] = screens.map {
+            realWallpaper ? NSWorkspace.shared.desktopImageOptions(for: $0)! : [.imageScaling: 3, .allowClipping: false]
+        }
+        let before: [URL?] = screens.enumerated().map { index, screen in
+            realWallpaper ? NSWorkspace.shared.desktopImageURL(for: screen) : URL(fileURLWithPath: "/isolated-original-\(index).heic")
+        }
         let drawingsDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("pond-drawings-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: drawingsDirectory) }
-        var images = Dictionary(uniqueKeysWithValues: screens.map { (DesktopBackdrop.displayIdentifier($0), NSWorkspace.shared.desktopImageURL(for: $0)!) })
-        var options = Dictionary(uniqueKeysWithValues: screens.map { (DesktopBackdrop.displayIdentifier($0), NSWorkspace.shared.desktopImageOptions(for: $0)!) })
+        var images = Dictionary(uniqueKeysWithValues: screens.enumerated().map { (DesktopBackdrop.displayIdentifier($0.element), before[$0.offset]!) })
+        var options = Dictionary(uniqueKeysWithValues: screens.enumerated().map { (DesktopBackdrop.displayIdentifier($0.element), beforeOptions[$0.offset]) })
         let readImage: (NSScreen) -> URL? = { screen in realWallpaper ? NSWorkspace.shared.desktopImageURL(for: screen) : images[DesktopBackdrop.displayIdentifier(screen)] }
         let readOptions: (NSScreen) -> [NSWorkspace.DesktopImageOptionKey: Any]? = { screen in realWallpaper ? NSWorkspace.shared.desktopImageOptions(for: screen) : options[DesktopBackdrop.displayIdentifier(screen)] }
-        let backdrop = try realWallpaper ? DesktopBackdrop() : DesktopBackdrop(directory: drawingsDirectory.appendingPathComponent("backdrop"), readImage: readImage, readOptions: readOptions, setImage: { url, screen, value in
+        let backdrop = try systemBackdrop ?? DesktopBackdrop(directory: drawingsDirectory.appendingPathComponent("backdrop"), readImage: readImage, readOptions: readOptions, setImage: { url, screen, value in
             images[DesktopBackdrop.displayIdentifier(screen)] = url
             options[DesktopBackdrop.displayIdentifier(screen)] = value
         })
@@ -45,6 +50,8 @@ import MetalKit
             count += 1
         }
         func advance(_ seconds: Double = 0.16) { RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds)) }
+        let diagnostics = drawingsDirectory.appendingPathComponent("diagnostics.json")
+        controller.diagnosticURL = diagnostics
         controller.start(); await controller.waitForBackdrop(); advance()
         let sunnyBackdrop = readImage(screens[0])!
         check(controller.backdropError == nil && sunnyBackdrop != before[0], "native sunny backdrop applied")
@@ -133,6 +140,20 @@ import MetalKit
         controller.interactive = true
         if !controller.reducedMotion {
             check(controller.input.geometryQueryCount > queries, "re-enabling refreshes stale geometry immediately")
+        }
+        if !controller.reducedMotion {
+            func blockFixture() { Thread.sleep(forTimeInterval: 0.09) }
+            blockFixture() // Deliberately missed frame, isolated fixture only.
+            advance(0.12)
+        }
+        controller.writeDiagnostics()
+        let diagnostic = try JSONSerialization.jsonObject(with: Data(contentsOf: diagnostics)) as! [String: Any]
+        let performance = diagnostic["performance"] as! [String: [String: Any]]
+        check(diagnostic["backdropOwnership"] as? String == "owned" && diagnostic["backdropWorkPending"] as? Bool == false, "diagnostics report actual ownership and drained work")
+        check((performance["backgroundExport"]?["samples"] as? Int ?? 0) > 0, "background export duration is measured")
+        if !controller.reducedMotion {
+            check((performance["frameIntervals"]?["over50MS"] as? Int ?? 0) > 0, "diagnostics detect an injected long frame")
+            check((performance["displayGPU"]?["samples"] as? Int ?? 0) > 0, "normal GPU completion timing is separate from readback")
         }
         let preSleepImage = readImage(screens[0])
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
