@@ -2,7 +2,7 @@
 using namespace metal;
 struct FishVertex { float4 position, normal, detail; };
 struct FishUniforms { float4 viewport, placement, motion, kind, appearance; };
-struct EffectUniforms { float4 viewport, placement, style, travel; };
+struct EffectUniforms { float4 viewport, placement, style, travel, atmosphere; };
 struct VertexOut { float4 position [[position]]; float2 point; float3 local; float3 normal; float4 detail; };
 constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
 float2 imageUV(float2 p, float2 size) {
@@ -15,6 +15,23 @@ float hash(float2 p) { return fract(sin(dot(p,float2(127.1,311.7))) * 43758.5453
 float noise(float2 p) {
     float2 i=floor(p), f=fract(p); f=f*f*(3-2*f);
     return mix(mix(hash(i),hash(i+float2(1,0)),f.x),mix(hash(i+float2(0,1)),hash(i+1),f.x),f.y);
+}
+// Large, soft moving shadows distinguish broken clouds from uniform overcast.
+float3 weatherLight(float3 color, float2 point, constant EffectUniforms &u) {
+    float snow=u.atmosphere.x, overcast=u.atmosphere.y, cloudy=u.atmosphere.z;
+    float shade=0;
+    if(cloudy>0) {
+        float scale=max(u.viewport.x/1600.0,u.viewport.y/1000.0);
+        float2 drift=float2(sin(u.atmosphere.w)*3,cos(u.atmosphere.w)*2);
+        float2 p=point/(420*scale)+drift;
+        float cover=0.68*noise(p)+0.32*noise(p*2.1+7);
+        shade=smoothstep(0.30,0.72,cover)*cloudy;
+    }
+    float gray=dot(color,float3(0.21,0.72,0.07));
+    color=mix(color,float3(gray),overcast*0.32+snow*0.18+shade*0.10);
+    color*=1-overcast*0.19-snow*0.07-shade*0.32;
+    color=mix(color,float3(0.48,0.56,0.62),overcast*0.055+snow*0.08);
+    return color;
 }
 vertex VertexOut fishVertex(uint id [[vertex_id]], const device FishVertex *mesh [[buffer(0)]], constant FishUniforms &u [[buffer(1)]]) {
     FishVertex v=mesh[id]; float3 p=v.position.xyz;
@@ -75,6 +92,30 @@ vertex VertexOut effectVertex(uint id [[vertex_id]], constant EffectUniforms &u 
     VertexOut o; o.position=float4(p/u.viewport.xy*2-1,0,1);o.point=p;o.local=float3(q,0);o.normal=0;o.detail=0;return o;
 }
 fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniforms &u [[buffer(0)]], texture2d<float> env [[texture(0)]], texture2d<float> mask [[texture(1)]]) {
+    if(u.style.x>5.5) {
+        float alpha=0;
+        float t=u.style.y;
+        float wind=sin(t*0.0245436926)*1.8;
+        for(int layer=0;layer<3;layer++) {
+            float spacing=64+layer*44;
+            float speed=layer==0 ? 0.25 : (layer==1 ? 0.5 : 1.0);
+            float2 grid=in.point/spacing+float2(wind,t*speed);
+            float2 cell=floor(grid), local=fract(grid);
+            // Periodic seed lattice matches every layer's 256-second translation.
+            float2 wrapped=cell-floor(cell/64)*64;
+            float seed=hash(wrapped+float2(layer*71,layer*113));
+            float other=hash(wrapped+float2(41+layer*17,93));
+            float sway=sin(t*0.7853981634+seed*6.2831853)*0.13;
+            float2 center=float2(0.28+seed*0.44+sway,0.24+other*0.52);
+            float2 d=(local-center)*spacing;
+            float radius=0.75+layer*0.85+other*0.5;
+            d.x*=0.85+seed*0.35;
+            float flake=exp(-dot(d,d)/(radius*radius));
+            alpha+=flake*(0.48+layer*0.16);
+        }
+        alpha=min(0.94,alpha)*u.style.z;
+        return float4(float3(0.91,0.96,1.0)*alpha,alpha);
+    }
     if(u.style.x>3.5) {
         // Independently phased sparse drops at three depths. Eight-second wrapping is
         // reduced in Double on the CPU; each local reset disappears through a fade.
@@ -139,6 +180,7 @@ fragment float4 effectFragment(VertexOut in [[stage_in]], constant EffectUniform
     vein=max(vein,exp(-branches*20)*0.42*(1-smoothstep(0.10,0.40,abs(midrib))));
     color=mix(color,color*0.65+float3(0.07,0.10,0.015),vein*0.60);
     color*=0.79+0.21*smoothstep(0.0,0.09,edge-r);
+    color=weatherLight(color,in.point,u);
     return float4(color*alpha,alpha);
 }
 
@@ -201,5 +243,6 @@ fragment float4 waterFragment(VertexOut in [[stage_in]], constant EffectUniforms
     float4 color=scene.sample(linearSampler,uv+float2(offset.x,-offset.y));
     float light=dot(normal,float2(-0.55,0.83));
     color.rgb+=light*float3(0.14,0.18,0.16)+field.z*float3(0.55,0.65,0.60);
+    color.rgb=weatherLight(color.rgb,in.point,u);
     return float4(clamp(color.rgb,0.0,1.0),color.a);
 }

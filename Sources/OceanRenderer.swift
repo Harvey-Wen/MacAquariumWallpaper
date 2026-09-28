@@ -23,6 +23,7 @@ private struct EffectUniforms {
     var placement: SIMD4<Float>
     var style: SIMD4<Float>
     var travel: SIMD4<Float> = .zero
+    var atmosphere: SIMD4<Float> = .zero
 }
 
 final class OceanRenderer: NSObject, MTKViewDelegate {
@@ -186,7 +187,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
         guard let destination = pass.colorAttachments[0].texture,
               prepareTargets(width: destination.width, height: destination.height), let targets else { return }
-        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else {
+        guard frame.waterStrength > 0 || frame.weatherAmount > 0 || simd_length_squared(frame.atmosphere) > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else {
             command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding(); return
         }
         let scenePass = MTLRenderPassDescriptor()
@@ -200,13 +201,14 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         guard var encoder = command.makeRenderCommandEncoder(descriptor: scenePass) else { return }
         func phase(_ frequency: Double) -> Float { Float((frame.time * frequency).truncatingRemainder(dividingBy: 2 * .pi)) }
         let viewport = SIMD4<Float>(max(frame.size.x, 1), max(frame.size.y, 1), phase(0.21), phase(0.17))
+        let atmosphere = SIMD4<Float>(frame.atmosphere.x, frame.atmosphere.y, frame.atmosphere.z, phase(0.025))
         encoder.setCullMode(.none)
         encoder.setFragmentTexture(environment, index: 0)
         encoder.setFragmentTexture(waterDistance, index: 1)
         func effect(at position: SIMD2<Float>, radius: Float, angle: Float = 0, type: Float, age: Float = 0, strength: Float = 1, seed: Float = 0) {
             encoder.setRenderPipelineState(effectPipeline)
             encoder.setDepthStencilState(effectDepth)
-            var uniforms = EffectUniforms(viewport: viewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed))
+            var uniforms = EffectUniforms(viewport: viewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed), atmosphere: atmosphere)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -256,7 +258,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentTexture(targets.waves, index: 3)
         encoder.setRenderPipelineState(compositePipeline)
         encoder.setDepthStencilState(effectDepth)
-        var composite = EffectUniforms(viewport: viewport, placement: .zero, style: SIMD4(5, 0, 1, 0))
+        var composite = EffectUniforms(viewport: viewport, placement: .zero, style: SIMD4(5, 0, 1, 0), atmosphere: atmosphere)
         encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -270,6 +272,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             // Reduce Double time before Float conversion; frozen frames also freeze rain.
             effect(at: frame.size * 0.5, radius: 1, type: 4,
                    age: Float(frame.time.truncatingRemainder(dividingBy: 8)), strength: frame.weatherAmount)
+        }
+        if frame.atmosphere.x > 0 {
+            effect(at: frame.size * 0.5, radius: 1, type: 6,
+                   age: Float(frame.time.truncatingRemainder(dividingBy: 256)), strength: frame.atmosphere.x)
         }
         encoder.endEncoding()
     }

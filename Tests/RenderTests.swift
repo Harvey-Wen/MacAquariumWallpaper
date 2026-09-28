@@ -6,6 +6,71 @@ import ImageIO
     static func delta(_ a: [UInt8], _ b: [UInt8]) -> Double {
         Double(zip(a,b).reduce(0) { $0 + abs(Int($1.0)-Int($1.1)) }) / Double(a.count * 255)
     }
+    static func weatherModes(renderer: OceanRenderer, sunny: OceanFrame, output: URL) throws {
+        var samples: [[UInt8]] = []
+        for weather in [PondWeather.sunny, .snowy, .overcast, .cloudy] {
+            var frame = sunny; frame.atmosphere = weather.atmosphere
+            let bytes = try renderer.renderRGBA(frame: frame,width: 800,height: 500)
+            precondition(stride(from: 3,to: bytes.count,by: 4).allSatisfy { bytes[$0] == 255 })
+            for previous in samples { precondition(delta(previous,bytes) > 0.003, "Weather must be visibly distinct") }
+            samples.append(bytes)
+            try renderer.writePNG(frame: frame,width: 1600,height: 1000,to: output.appendingPathComponent("pond-\(weather.rawValue).png"))
+        }
+        var still = OceanFrame.empty; still.size = sunny.size; still.atmosphere = PondWeather.overcast.atmosphere
+        let overcast = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        precondition(overcast.contains { $0 > 0 }, "Atmosphere-only frame is visible")
+        still.time = 10
+        let overcastLater = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        precondition(overcast == overcastLater, "Overcast contains no precipitation or moving cloud shadows")
+        still.atmosphere = PondWeather.cloudy.atmosphere; still.time = 0
+        let clouds = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        still.time = 10
+        let movingClouds = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        precondition(delta(clouds,movingClouds) > 0.001, "Broken cloud shadows drift")
+        let cloudPeriod = 2 * Double.pi / 0.025
+        still.time = cloudPeriod - 0.0001
+        let cloudBefore = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        still.time = cloudPeriod + 0.0001
+        let cloudAfter = try renderer.renderRGBA(frame: still,width: 800,height: 500)
+        precondition(delta(cloudBefore,cloudAfter) < 0.00001, "Cloud phase wraps continuously")
+        still.atmosphere = PondWeather.snowy.atmosphere; still.time = 0
+        let snow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        let pausedSnow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        precondition(snow == pausedSnow, "Pause freezes snow exactly")
+        still.time = 1.0/30
+        let snowLater = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        var foliage = 0, water = 0
+        for y in stride(from: 0,to: 1000,by: 2) { for x in stride(from: 0,to: 1600,by: 2) {
+            let i=(y*1600+x)*4
+            if (0..<3).contains(where: { abs(Int(snow[i+$0])-Int(snowLater[i+$0])) > 3 }) {
+                if PondGeometry.contains(SIMD2(Float(x),1000-Float(y)),size: still.size) { water += 1 }
+                else { foliage += 1 }
+            }
+        }}
+        precondition(foliage > 100 && water > 100, "Snow moves across branches and water")
+        still.time = 256 - 0.0001
+        let snowBefore = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        still.time = 256 + 0.0001
+        let snowAfter = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        precondition(delta(snowBefore,snowAfter) < delta(snow,snowLater)*0.05, "Snow does not jump when its clock wraps")
+        still.time = 256 * 10000
+        let longSnow = try renderer.renderRGBA(frame: still,width: 1600,height: 1000)
+        precondition(snow == longSnow, "Snow retains precision after weeks")
+        for weather in [PondWeather.snowy, .overcast, .cloudy] {
+            var frame = sunny; frame.size = SIMD2(1512,982); frame.atmosphere = weather.atmosphere
+            var timings: [Double] = []
+            for index in 0..<20 {
+                frame.time += 1.0/30
+                _ = try renderer.renderRGBA(frame: frame,width: 3024,height: 1964)
+                if index >= 5 { timings.append(renderer.lastGPUSeconds * 1000) }
+            }
+            timings.sort()
+            precondition(timings[14] < 1000/30, "New weather fits the GPU frame budget")
+            print("GPU \(weather.rawValue) 3024x1964: median \(timings[7]) ms; max \(timings[14]) ms.")
+        }
+        print("PASS five-weather visuals, snow over \(foliage) foliage / \(water) water samples, pause, long-running snow and continuous cloud/snow wrap.")
+    }
+
     static func main() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let output = root.appendingPathComponent(".build/render-validation")
@@ -27,6 +92,7 @@ import ImageIO
         let pixels = try renderer.renderRGBA(frame: sunny,width: 1600,height: 1000)
         precondition(stride(from: 3,to: pixels.count,by: 4).allSatisfy { pixels[$0] == 255 })
         try renderer.writePNG(frame: sunny,width: 1600,height: 1000,to: output.appendingPathComponent("pond-sunny.png"))
+        try weatherModes(renderer: renderer, sunny: sunny, output: output)
         var noFish = sunny; noFish.fish = []; noFish.leaves = []; noFish.ripples = []
         let plain = try renderer.renderRGBA(frame: noFish,width: 1600,height: 1000)
         precondition(delta(pixels,plain)>0.0001)

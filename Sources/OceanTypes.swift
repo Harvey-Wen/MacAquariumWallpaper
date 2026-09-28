@@ -5,7 +5,29 @@ enum FishSpecies: Int, CaseIterable {
     case koi
 }
 
-enum PondWeather: String { case sunny, rainy }
+enum PondWeather: String, CaseIterable {
+    case sunny, rainy, snowy, overcast, cloudy
+
+    var title: String {
+        switch self {
+        case .sunny: return "晴天"
+        case .rainy: return "雨天"
+        case .snowy: return "下雪"
+        case .overcast: return "阴天"
+        case .cloudy: return "多云"
+        }
+    }
+
+    // Snow, uniform overcast and broken cloud cover transition independently of rain.
+    var atmosphere: SIMD3<Float> {
+        switch self {
+        case .sunny, .rainy: return .zero
+        case .snowy: return SIMD3(1, 0, 0)
+        case .overcast: return SIMD3(0, 1, 0)
+        case .cloudy: return SIMD3(0, 0, 1)
+        }
+    }
+}
 enum DisturbanceKind: Int { case click, rain, leaf, motion }
 enum LeafStage: Int { case falling, floating, grounded }
 
@@ -51,6 +73,7 @@ struct OceanFrame {
     var waterStrength: Float
     var leaves: [PondLeaf] = []
     var weatherAmount: Float = 0
+    var atmosphere: SIMD3<Float> = .zero
 
     static let empty = OceanFrame(size: SIMD2(1440, 900), time: 0, fish: [], ripples: [], waterStrength: 0)
 }

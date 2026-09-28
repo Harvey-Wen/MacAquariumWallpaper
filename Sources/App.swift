@@ -55,8 +55,8 @@ import AppKit
             add(menu, "鼠标互动", #selector(toggleInteraction), checked: desktop.interactive)
             let weather = NSMenuItem(title: "天气", action: nil, keyEquivalent: "")
             let choices = NSMenu()
-            for (title, value) in [("晴天", PondWeather.sunny), ("雨天", PondWeather.rainy)] {
-                let option = NSMenuItem(title: title, action: #selector(setWeather(_:)), keyEquivalent: "")
+            for value in PondWeather.allCases {
+                let option = NSMenuItem(title: value.title, action: #selector(setWeather(_:)), keyEquivalent: "")
                 option.target = self; option.representedObject = value.rawValue
                 option.state = desktop.weather == value ? .on : .off
                 choices.addItem(option)

@@ -14,6 +14,7 @@ final class OceanSimulation {
     private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
+    private var atmosphere = SIMD3<Float>.zero
     private var lastPointerPosition: SIMD2<Float>?
     private var lastMotionPosition: SIMD2<Float>?
     private var lastMotionTime: Double = 0
@@ -80,21 +81,26 @@ final class OceanSimulation {
             lastMotionTime = elapsedTime
             return
         }
-        guard step > 0.5, let lastMotionPosition,
+        guard step > 0.5 else { return }
+        // Fish react along every accepted segment, independently of the wave budget.
+        // Distance-weighted impulses keep the response stable across pointer sample rates.
+        let travel = position - previous
+        for index in fish.indices {
+            let along = min(1, max(0, simd_dot(fish[index].position - previous, travel) / (step * step)))
+            let offset = fish[index].position - (previous + travel * along)
+            let distance = simd_length(offset)
+            let influence = max(0, 1 - distance / 150)
+            guard influence > 0 else { continue }
+            fish[index].panic = max(fish[index].panic, influence * 0.65)
+            fish[index].velocity = limited(fish[index].velocity
+                + unit(offset, fallback: perpendicular(fish[index].velocity)) * (step * 2.4 * influence), to: 175)
+        }
+        guard let lastMotionPosition,
               simd_distance(position, lastMotionPosition) >= 11,
               elapsedTime - lastMotionTime >= 0.12 else { return }
         self.lastMotionPosition = position
         lastMotionTime = elapsedTime
         addRipple(at: position, strength: 0.34, source: .motion, travel: limited(position - lastMotionPosition, to: 140))
-        for index in fish.indices {
-            let offset = fish[index].position - position
-            let distance = simd_length(offset)
-            let influence = max(0, 1 - distance / 105)
-            guard influence > 0 else { continue }
-            fish[index].panic = max(fish[index].panic, influence * 0.18)
-            fish[index].velocity = limited(fish[index].velocity
-                + unit(offset, fallback: perpendicular(fish[index].velocity)) * (12 * influence), to: 175)
-        }
     }
 
     func resetPointer() {
@@ -131,7 +137,7 @@ final class OceanSimulation {
 
     func frame(waterStrength: Float) -> OceanFrame {
         OceanFrame(size: size, time: elapsedTime, fish: fish, ripples: ripples,
-                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount)
+                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount, atmosphere: atmosphere)
     }
 
     private func integrate(step: Float) {
@@ -139,6 +145,8 @@ final class OceanSimulation {
         time = Float(elapsedTime)
         weatherAmount += ((weather == .rainy ? 1 : 0) - weatherAmount) * min(1, step * 1.8)
         if weatherAmount < 0.0001 { weatherAmount = 0 }
+        atmosphere += (weather.atmosphere - atmosphere) * min(1, step * 1.8)
+        for index in 0..<3 where atmosphere[index] < 0.0001 { atmosphere[index] = 0 }
 
         ageRipples(step: step)
         while elapsedTime + 0.000_001 >= nextRainTime {

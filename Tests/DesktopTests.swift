@@ -65,6 +65,22 @@ import MetalKit
         check(controller.simulation.weather == .sunny && controller.status.contains("晴天"), "weather selection works while paused")
         check(controller.simulation.time == pausedTime
               && controller.simulation.frame(waterStrength: 0.45).weatherAmount == pausedWeatherAmount, "pause freezes rain transition")
+        let frozenAtmosphere = controller.simulation.frame(waterStrength: 0.45).atmosphere
+        var previousBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+        var previousPNG = try Data(contentsOf: previousBackdrop)
+        for weather in [PondWeather.snowy, .overcast, .cloudy] {
+            controller.weather = weather; advance()
+            let nextBackdrop = NSWorkspace.shared.desktopImageURL(for: screens[0])!
+            let nextPNG = try Data(contentsOf: nextBackdrop)
+            check(controller.weather == weather && controller.status.contains(weather.title), "new weather reaches native status")
+            check(controller.backdropError == nil && nextBackdrop != previousBackdrop && nextPNG != previousPNG,
+                  "new weather refreshes native backing with distinct rendered image")
+            check(!FileManager.default.fileExists(atPath: previousBackdrop.path), "weather switching cleans previous backing")
+            check(controller.simulation.time == pausedTime && controller.simulation.frame(waterStrength: 0.45).atmosphere == frozenAtmosphere,
+                  "paused weather selection leaves simulation and atmosphere frozen")
+            previousBackdrop = nextBackdrop; previousPNG = nextPNG
+        }
+        controller.weather = .sunny
         check(!controller.input.enabled, "pause stops input")
         controller.enabled = false
         check(NSWorkspace.shared.desktopImageURL(for: screens[0]) == before[0], "disable restores original image")
