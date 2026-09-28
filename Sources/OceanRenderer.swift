@@ -37,10 +37,16 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private let fishPipeline: MTLRenderPipelineState
     private let effectPipeline: MTLRenderPipelineState
+    private let overlayPipeline: MTLRenderPipelineState
     private let wavePipeline: MTLRenderPipelineState
     private let compositePipeline: MTLRenderPipelineState
     private let precipitationPipeline: MTLRenderPipelineState
-    private var targets: (scene: MTLTexture, msaa: MTLTexture, depth: MTLTexture, waves: MTLTexture, output: MTLTexture)?
+    private typealias Targets = (scene: MTLTexture, msaa: MTLTexture, depth: MTLTexture, waves: MTLTexture)
+    private var targets: Targets?
+    private var previewTargets: Targets?
+    private(set) var targetAllocations = 0
+    private(set) var previewTargetAllocations = 0
+    var allocatedBytes: Int { device.currentAllocatedSize }
     private let fishDepth: MTLDepthStencilState
     private let effectDepth: MTLDepthStencilState
     private var meshes: [FishSpecies: (MTLBuffer, Int)] = [:]
@@ -82,13 +88,13 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         sampleCount = samples
         let source = try String(contentsOf: shaderURL, encoding: .utf8)
         let library = try device.makeLibrary(source: source, options: nil)
-        func pipeline(_ vertex: String, _ fragment: String) throws -> MTLRenderPipelineState {
+        func pipeline(_ vertex: String, _ fragment: String, scene: Bool = true) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = library.makeFunction(name: vertex)
             descriptor.fragmentFunction = library.makeFunction(name: fragment)
             descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-            descriptor.depthAttachmentPixelFormat = .depth32Float
-            descriptor.rasterSampleCount = samples
+            descriptor.depthAttachmentPixelFormat = scene ? .depth32Float : .invalid
+            descriptor.rasterSampleCount = scene ? samples : 1
             let attachment = descriptor.colorAttachments[0]!
             attachment.isBlendingEnabled = true
             attachment.sourceRGBBlendFactor = .one
@@ -99,8 +105,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         }
         fishPipeline = try pipeline("fishVertex", "fishFragment")
         effectPipeline = try pipeline("effectVertex", "effectFragment")
-        compositePipeline = try pipeline("effectVertex", "waterFragment")
-        precipitationPipeline = try pipeline("precipitationVertex", "precipitationFragment")
+        overlayPipeline = try pipeline("effectVertex", "effectFragment", scene: false)
+        compositePipeline = try pipeline("effectVertex", "waterFragment", scene: false)
+        precipitationPipeline = try pipeline("precipitationVertex", "precipitationFragment", scene: false)
         let waveDescriptor = MTLRenderPipelineDescriptor()
         waveDescriptor.vertexFunction = library.makeFunction(name: "waveVertex")
         waveDescriptor.fragmentFunction = library.makeFunction(name: "waveFragment")
@@ -133,8 +140,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         }
         view.device = device
         view.colorPixelFormat = .bgra8Unorm
-        view.depthStencilPixelFormat = .depth32Float
-        view.sampleCount = sampleCount
+        view.depthStencilPixelFormat = .invalid
+        view.sampleCount = 1
         view.clearColor = MTLClearColorMake(0, 0, 0, 0)
         view.clearDepth = 1
         view.framebufferOnly = true
@@ -169,7 +176,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         sample.phase = 0
         sample.panic = 0
         let frame = OceanFrame(size: SIMD2(256, 128), time: 0, fish: [sample], ripples: [], waterStrength: 0)
-        let bytes = try renderRGBA(frame: frame, width: 256, height: 128, includeEnvironment: false)
+        let bytes = try renderRGBA(frame: frame, width: 256, height: 128, includeEnvironment: false, preview: true)
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 256, pixelsHigh: 128,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 256 * 4, bitsPerPixel: 32),
@@ -191,9 +198,10 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         command.commit()
     }
 
-    // Reuse render targets across display and export frames; only geometry changes allocate.
-    private func prepareTargets(width: Int, height: Int) -> Bool {
-        if let targets, targets.scene.width == width && targets.scene.height == height { return true }
+    // Preview resources cannot evict the desktop target. CPU readback is export-only.
+    private func prepareTargets(width: Int, height: Int, preview: Bool) -> Targets? {
+        let cached = preview ? previewTargets : targets
+        if let cached, cached.scene.width == width && cached.scene.height == height { return cached }
         func texture(_ format: MTLPixelFormat, _ w: Int, _ h: Int, samples: Int = 1, shared: Bool = false) -> MTLTexture? {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
             d.usage = [.renderTarget, .shaderRead]
@@ -205,16 +213,17 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         guard let scene = texture(.bgra8Unorm, width, height),
               let msaa = texture(.bgra8Unorm, width, height, samples: sampleCount),
               let depth = texture(.depth32Float, width, height, samples: sampleCount),
-              let waves = texture(.rgba16Float, max(1, width / 2), max(1, height / 2)),
-              let output = texture(.bgra8Unorm, width, height, shared: true) else { return false }
-        targets = (scene, msaa, depth, waves, output)
-        return true
+              let waves = texture(.rgba16Float, max(1, width / 2), max(1, height / 2)) else { return nil }
+        let result: Targets = (scene, msaa, depth, waves)
+        if preview { previewTargets = result; previewTargetAllocations += 1 }
+        else { targets = result; targetAllocations += 1 }
+        return result
     }
 
     private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer,
-                        includeEnvironment: Bool = true) {
+                        includeEnvironment: Bool = true, preview: Bool = false) {
         guard let destination = pass.colorAttachments[0].texture,
-              prepareTargets(width: destination.width, height: destination.height), let targets else { return }
+              let targets = prepareTargets(width: destination.width, height: destination.height, preview: preview) else { return }
         guard frame.waterStrength > 0 || frame.weatherAmount > 0 || simd_length_squared(frame.atmosphere) > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty || !frame.precipitation.isEmpty || !frame.surfaceSnow.isEmpty else {
             command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding(); return
         }
@@ -234,8 +243,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         encoder.setCullMode(.none)
         encoder.setFragmentTexture(environment, index: 0)
         encoder.setFragmentTexture(waterDistance, index: 1)
+        var scenePassActive = true
         func effect(at position: SIMD2<Float>, radius: Float, angle: Float = 0, type: Float, age: Float = 0, strength: Float = 1, seed: Float = 0) {
-            encoder.setRenderPipelineState(effectPipeline)
+            encoder.setRenderPipelineState(scenePassActive ? effectPipeline : overlayPipeline)
             encoder.setDepthStencilState(effectDepth)
             var uniforms = EffectUniforms(viewport: viewport, placement: SIMD4(position.x, position.y, radius, angle), style: SIMD4(type, age, strength, seed), atmosphere: atmosphere)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
@@ -283,6 +293,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         waveEncoder.endEncoding()
         guard let finalEncoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder = finalEncoder
+        scenePassActive = false
         encoder.setFragmentTexture(environment, index: 0)
         encoder.setFragmentTexture(waterDistance, index: 1)
         encoder.setFragmentTexture(targets.scene, index: 2)
@@ -327,8 +338,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     }
 
     /// Deterministic offscreen render; rows run top-to-bottom, bytes are premultiplied RGBA8.
-    func renderRGBA(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true) throws -> [UInt8] {
-        let (command, output) = try readbackCommand(frame: frame, width: width, height: height, includeEnvironment: includeEnvironment)
+    func renderRGBA(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true, preview: Bool = false) throws -> [UInt8] {
+        let (command, output) = try readbackCommand(frame: frame, width: width, height: height, includeEnvironment: includeEnvironment, preview: preview)
         command.commit()
         command.waitUntilCompleted()
         if let error = command.error { throw error }
@@ -336,27 +347,21 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         return Self.readPixels(output, width: width, height: height)
     }
 
-    private func readbackCommand(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true) throws -> (MTLCommandBuffer, MTLTexture) {
+    private func readbackCommand(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true, preview: Bool = false) throws -> (MTLCommandBuffer, MTLTexture) {
         guard width > 0, height > 0 else { throw OceanRenderError.unavailable("导出尺寸必须大于零。") }
-        guard prepareTargets(width: width, height: height), let targets, let command = queue.makeCommandBuffer() else {
+        guard let command = queue.makeCommandBuffer() else {
             throw OceanRenderError.unavailable("无法创建离屏画布。")
         }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = .renderTarget
         guard let output = device.makeTexture(descriptor: descriptor) else { throw OceanRenderError.unavailable("无法创建读回纹理。") }
-        let multisample = targets.msaa, depth = targets.depth
         let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = sampleCount > 1 ? multisample : output
-        pass.colorAttachments[0].resolveTexture = sampleCount > 1 ? output : nil
+        pass.colorAttachments[0].texture = output
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = sampleCount > 1 ? .multisampleResolve : .store
+        pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        pass.depthAttachment.texture = depth
-        pass.depthAttachment.loadAction = .clear
-        pass.depthAttachment.storeAction = .dontCare
-        pass.depthAttachment.clearDepth = 1
-        encode(frame, pass: pass, command: command, includeEnvironment: includeEnvironment)
+        encode(frame, pass: pass, command: command, includeEnvironment: includeEnvironment, preview: preview)
         return (command, output)
     }
 

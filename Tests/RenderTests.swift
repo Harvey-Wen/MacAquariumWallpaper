@@ -173,6 +173,12 @@ import ImageIO
         for _ in 0..<180 { simulation.update(deltaTime: 1.0/30) }
         let sunny = simulation.frame(waterStrength: 0.45)
         let pixels = try renderer.renderRGBA(frame: sunny,width: 1600,height: 1000)
+        let allocations = renderer.targetAllocations
+        for fish in sunny.fish.prefix(3) { _ = try renderer.fishPreview(fish) }
+        let afterPreview = try renderer.renderRGBA(frame: sunny,width: 1600,height: 1000)
+        precondition(renderer.targetAllocations == allocations && renderer.previewTargetAllocations == 1, "previews never rebuild desktop targets")
+        precondition(pixels == afterPreview, "preview rendering leaves the desktop pixels identical")
+        precondition(view.sampleCount == 1 && view.depthStencilPixelFormat == .invalid, "final composite has no redundant MSAA or depth")
         precondition(stride(from: 3,to: pixels.count,by: 4).allSatisfy { pixels[$0] == 255 })
         try renderer.writePNG(frame: sunny,width: 1600,height: 1000,to: output.appendingPathComponent("pond-sunny.png"))
         try weatherModes(renderer: renderer, sunny: sunny, output: output)
