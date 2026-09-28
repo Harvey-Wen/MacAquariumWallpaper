@@ -33,7 +33,7 @@ import AppKit
         let records = [
             record(owner: "Finder", pid: 1, layer: -2147483603, bounds: display),
             record(owner: "Finder", pid: 1, layer: 0, bounds: appBounds),
-            record(owner: "MacAquariumWallpaper", pid: 42, layer: 0, bounds: display),
+            record(owner: "MacAquariumWallpaper", pid: 42, layer: -2147483622, bounds: display),
             record(owner: "Dock", pid: 2, layer: 20, bounds: display),
             record(owner: "Dock", pid: 2, layer: 20, bounds: CGRect(x: 400, y: 840, width: 600, height: 60)),
             record(owner: "Safari", pid: 3, layer: 0, bounds: display, alpha: 0)
@@ -44,6 +44,15 @@ import AppKit
         check(snapshot.blockingRects.count == 2, "Finder file windows and actual Dock block; known Dock host does not")
         check(snapshot.blockingRects.contains(CGRect(x: 20, y: 550, width: 300, height: 250)), "Finder files are not treated as desktop")
         check(snapshot.blockedEventPIDs.contains(2), "Dock event targets are rejected even when its transparent host is ignored")
+        let editorBounds = CGRect(x: 500, y: 200, width: 760, height: 560)
+        let withEditor = DesktopWindowSnapshot.parse(records: records + [
+            record(owner: "MacAquariumWallpaper", pid: 42, layer: 0, bounds: editorBounds)
+        ], screenFrame: display, primaryTop: 900, ownPID: ownPID)
+        let editorGeometry = DesktopInputGeometry(screenFrame: display, visibleFrame: display,
+            blockingRects: withEditor.blockingRects, blockedEventPIDs: withEditor.blockedEventPIDs, valid: withEditor.valid)
+        check(!editorGeometry.containsDesktop(CGPoint(x: 800, y: 500)), "painting window blocks pond hover beneath it")
+        check(editorGeometry.containsDesktop(CGPoint(x: 1350, y: 500)), "water outside painting window remains interactive")
+        check(!editorGeometry.containsDesktop(CGPoint(x: 1350, y: 500), eventTargetPID: 42), "own controls cannot create pond clicks")
         check(!DesktopWindowSnapshot.parse(records: [], screenFrame: display, primaryTop: 900, ownPID: ownPID).valid,
               "empty window snapshots fail closed")
         var malformed = records
