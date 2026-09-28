@@ -13,6 +13,7 @@ private enum SimulationTests {
         try pointerSweepAffectsFishAlongItsPath()
         try pointerStillnessAndReentryKeepFishCalm()
         try pointerSamplingKeepsResponseConsistent()
+        try weatherModesTransitionAndStayDry()
         try populationAndShoreline()
         try waterClicksAndFalloff()
         try directionalLeafForceAndRainBudget()
@@ -31,7 +32,39 @@ private enum SimulationTests {
         try frameRateEquivalence()
         try jitteredFrameTimingPreservesEvents()
         try frameSnapshot()
-        print("SimulationTests: 22 passed")
+        print("SimulationTests: 23 passed")
+    }
+
+    private static func weatherModesTransitionAndStayDry() throws {
+        try expect(PondWeather.allCases.map(\.title) == ["晴天", "雨天", "下雪", "阴天", "多云"], "all five weather choices have distinct labels")
+        for weather in [PondWeather.snowy, .overcast, .cloudy] {
+            let sim = OceanSimulation(size: SIMD2(1600, 1000), seed: 7)
+            sim.weather = .rainy
+            for _ in 0..<90 { sim.update(deltaTime: 1 / 30) }
+            let before = sim.frame(waterStrength: 0.45)
+            sim.weather = weather
+            try expect(sim.frame(waterStrength: 0.45).atmosphere == before.atmosphere, "choosing weather does not advance a paused frame")
+            sim.update(deltaTime: 1 / 30)
+            let first = sim.frame(waterStrength: 0.45)
+            try expect(simd_length(first.atmosphere) > 0 && simd_length(first.atmosphere) < 0.1 && first.weatherAmount > 0.8,
+                       "new weather fades in while old rain fades out")
+            for _ in 0..<240 { sim.update(deltaTime: 1 / 30) }
+            let settled = sim.frame(waterStrength: 0.45)
+            try expect(simd_distance(settled.atmosphere, weather.atmosphere) < 0.001 && settled.weatherAmount == 0,
+                       "each weather reaches its own target and fully removes rain")
+            try expect(!sim.ripples.contains { $0.source == .rain }, "snow, overcast and clouds do not spawn rain impacts")
+            sim.weather = .sunny
+            for _ in 0..<240 { sim.update(deltaTime: 1 / 30) }
+            try expect(sim.frame(waterStrength: 0.45).atmosphere == .zero, "sunny clears all atmospheric effects")
+        }
+        let fast = OceanSimulation(size: SIMD2(1600, 1000)), slow = OceanSimulation(size: SIMD2(1600, 1000))
+        for weather in PondWeather.allCases {
+            fast.weather = weather; slow.weather = weather
+            for _ in 0..<60 { fast.update(deltaTime: 1 / 30) }
+            for _ in 0..<10 { slow.update(deltaTime: 0.2) }
+            try expect(simd_distance(fast.frame(waterStrength: 0.45).atmosphere, slow.frame(waterStrength: 0.45).atmosphere) < 0.001,
+                       "weather transitions agree across frame rates and sequential changes")
+        }
     }
 
     private static func populationAndShoreline() throws {

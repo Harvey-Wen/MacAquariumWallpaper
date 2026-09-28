@@ -47,7 +47,7 @@ final class TransparentMetalView: MTKView {
     var animating: Bool { enabled && !paused && !sleeping && !locked && !reducedMotion }
     var status: String {
         if let backdropError { return "桌面背景错误：\(backdropError)" }
-        let scene = "\(simulation.fish.count) 条锦鲤 · \(weather == .rainy ? "雨天" : "晴天")"
+        let scene = "\(simulation.fish.count) 条锦鲤 · \(weather.title)"
         if !enabled { return "池塘已关闭 · \(scene)" }
         if locked { return "屏幕已锁定 · \(scene)" }
         if sleeping { return "屏幕休眠 · \(scene)" }
@@ -124,6 +124,7 @@ final class TransparentMetalView: MTKView {
                 try backdrop.apply(screen: screen, key: key) { url in
                     var frame = simulation.frame(waterStrength: 0.45)
                     frame.weatherAmount = weather == .rainy ? 1 : 0
+                    frame.atmosphere = weather.atmosphere
                     try renderer.writePNG(frame: frame, width: Int(pixels.width), height: Int(pixels.height), to: url)
                 }
             } else if !enabled {

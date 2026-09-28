@@ -14,6 +14,7 @@ final class OceanSimulation {
     private var nextLeafTime = 48.0 / 60
     private var nextLeafID = 0
     private var weatherAmount: Float = 0
+    private var atmosphere = SIMD3<Float>.zero
     private var lastPointerPosition: SIMD2<Float>?
     private var lastMotionPosition: SIMD2<Float>?
     private var lastMotionTime: Double = 0
@@ -122,7 +123,7 @@ final class OceanSimulation {
 
     func frame(waterStrength: Float) -> OceanFrame {
         OceanFrame(size: size, time: elapsedTime, fish: fish, ripples: ripples,
-                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount)
+                   waterStrength: waterStrength, leaves: leaves, weatherAmount: weatherAmount, atmosphere: atmosphere)
     }
 
     private func integrate(step: Float) {
@@ -130,6 +131,8 @@ final class OceanSimulation {
         time = Float(elapsedTime)
         weatherAmount += ((weather == .rainy ? 1 : 0) - weatherAmount) * min(1, step * 1.8)
         if weatherAmount < 0.0001 { weatherAmount = 0 }
+        atmosphere += (weather.atmosphere - atmosphere) * min(1, step * 1.8)
+        for index in 0..<3 where atmosphere[index] < 0.0001 { atmosphere[index] = 0 }
 
         ageRipples(step: step)
         while elapsedTime + 0.000_001 >= nextRainTime {
