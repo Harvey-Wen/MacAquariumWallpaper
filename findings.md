@@ -98,3 +98,5 @@
 - `Resources/Ocean.metal` 中 motion 波的侧向半径仅由 age 决定，整条移动线段等宽；`motionWaveForce` 使用相同公式，需同步。
 - `Sources/App.swift` 在天气与退出之间固定添加操作说明和输入状态；删除该块后只保留一条分隔线。
 - 现有真实 Metal 回归可验证方向、折射、消散、不同尺寸与 GPU 耗时，不需要修改桌面背景的集成测试。
+- 用户进一步明确：需要“一圈一圈往外散”叠加出的锥形，先前两条斜边波带方案不符合视觉目标。参考UBC波场模型沿路径叠加圆形波，NUS尾波说明中的横向/外向波峰，以及真实水槽移动波源照片。
+- 参考：https://www.cs.ubc.ca/labs/imager/th/1994/Khan1994/ ，https://crisp.nus.edu.sg/~research/shipwakes/shipwakes.htm ，https://zpe.gov.pl/a/przeczytaj/DVXBCK9ck 。

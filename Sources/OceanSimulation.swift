@@ -122,7 +122,7 @@ final class OceanSimulation {
               elapsedTime - lastMotionTime >= 0.12 else { return }
         self.lastMotionPosition = position
         lastMotionTime = elapsedTime
-        addRipple(at: position, strength: 0.34, source: .motion, travel: limited(position - lastMotionPosition, to: 140))
+        addRipple(at: position, strength: 0.34, source: .motion)
     }
 
     func resetPointer() {
@@ -145,7 +145,6 @@ final class OceanSimulation {
             fish[index].length *= ratio
         }
         for index in ripples.indices {
-            ripples[index].travel *= ratio
             ripples[index].position = PondGeometry.point(for: PondGeometry.uv(for: ripples[index].position, size: size), size: next)
         }
         for index in leaves.indices {
@@ -263,9 +262,9 @@ final class OceanSimulation {
         ripples.removeAll { $0.source == .rain ? $0.age >= 1.4 - 0.00001 : $0.age > 2.3 }
     }
 
-    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0, travel: SIMD2<Float> = .zero) {
+    private func addRipple(at position: SIMD2<Float>, strength: Float, source: DisturbanceKind, age: Float = 0) {
         guard PondGeometry.contains(position, size: size) else { return }
-        ripples.append(Ripple(position: position, age: age, strength: strength, source: source, travel: travel))
+        ripples.append(Ripple(position: position, age: age, strength: strength, source: source))
         // Rain owns a separate bounded budget so dense rainfall cannot evict interaction.
         let rain = source == .rain
         let limit = rain ? 72 : 24
@@ -355,31 +354,21 @@ final class OceanSimulation {
         if leaves.count > 12 { leaves.removeFirst(leaves.count - 12) }
     }
 
-    // Same cone, taper and wave slopes as the optical motion field.
+    // Each released circle keeps propagating around its original water position.
+    // Match the optical motion field so floating leaves follow the visible rings.
     static func motionWaveForce(at point: SIMD2<Float>, ripple: Ripple) -> SIMD2<Float> {
-        let length = simd_length(ripple.travel)
-        guard length > 0.1, ripple.age >= 0, ripple.age < 2.3 else { return .zero }
-        let axis = ripple.travel / length, lateral = SIMD2(-axis.y, axis.x)
-        let offset = point - ripple.position
-        let along = simd_dot(offset, axis)
-        let t = -along / max(18, length)
+        guard ripple.age > 0, ripple.age < 2.3 else { return .zero }
+        let offset = point - ripple.position, radius = simd_length(offset)
         func smooth(_ low: Float, _ high: Float, _ value: Float) -> Float {
             let x = min(1, max(0, (value - low) / (high - low)))
             return x * x * (3 - 2 * x)
         }
-        let taper = smooth(-0.18, 0.12, t) * (1 - smooth(0.78, 1.18, t))
-        guard taper > 0 else { return .zero }
-        let across = simd_dot(offset, lateral)
-        let width = 5 + ripple.age * 3
-        let spread: Float = 0.22
-        let d = abs(across) - (3 + ripple.age * 19 + max(0, -along) * spread)
-        let derivative = exp(-d*d/(width*width)) * (-0.62*sin(0.62*d) - 2*d/(width*width)*cos(0.62*d))
-        let side: Float = across > 0 ? 1 : (across < 0 ? -1 : 0)
-        let fade = exp(-ripple.age * 1.8) * (1 - smooth(1.7, 2.3, ripple.age))
-        let slope = derivative * taper * ripple.strength * fade * 2.2
-        let normal = lateral * side + axis * (along < 0 ? spread : 0)
-        let forwardSlope = exp(-across*across/45) * sin(t * .pi) * taper * ripple.strength * fade * 0.10
-        return (normal * slope + axis * forwardSlope) * 13
+        let width = 9 + ripple.age * 3
+        let d = radius - ripple.age * 44
+        let derivative = exp(-d*d/(width*width)) * (-0.58*sin(0.58*d) - 2*d/(width*width)*cos(0.58*d))
+        let fade = exp(-ripple.age * 0.9) / sqrt(1 + ripple.age * 0.8)
+            * smooth(0, 0.06, ripple.age) * (1 - smooth(1.5, 2.3, ripple.age))
+        return offset / max(radius, 0.01) * derivative * ripple.strength * fade * 2 * 13
     }
 
     private func updateLeaves(step: Float) {

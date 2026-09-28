@@ -2,7 +2,7 @@
 using namespace metal;
 struct FishVertex { float4 position, normal, detail; };
 struct FishUniforms { float4 viewport, placement, motion, kind, appearance; };
-struct EffectUniforms { float4 viewport, placement, style, travel, atmosphere; };
+struct EffectUniforms { float4 viewport, placement, style, atmosphere; };
 struct VertexOut { float4 position [[position]]; float2 point; float3 local; float3 normal; float4 detail; };
 constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
 float2 imageUV(float2 p, float2 size) {
@@ -179,21 +179,13 @@ fragment float4 waveFragment(VertexOut in [[stage_in]], constant EffectUniforms 
     float2 p=in.point-u.placement.xy, gradient=0;
     float foam=0;
     if(u.style.x==3) {
-        float travel=length(u.travel.xy);
-        if(travel<0.1) return 0;
-        float2 axis=u.travel.xy/travel, lateral=float2(-axis.y,axis.x);
-        float along=dot(p,axis), across=dot(p,lateral);
-        // A finite wake opens behind the cursor; its sloped sides form a soft cone.
-        float span=max(18.0,travel), t=-along/span;
-        float taper=smoothstep(-0.18,0.12,t)*(1-smoothstep(0.78,1.18,t));
-        float width=5+age*3;
-        float spread=0.22;
-        float d=abs(across)-(3+age*19+max(0.0,-along)*spread);
-        float fade=exp(-age*1.8)*(1-smoothstep(1.7,2.3,age));
-        float wake=packetDerivative(d,width,0.62)*taper;
-        float2 normal=lateral*sign(across)+axis*(along<0?spread:0.0);
-        gradient=normal*wake*strength*fade*2.2;
-        gradient+=axis*exp(-across*across/45)*sin(t*3.14159)*taper*strength*fade*0.10;
+        // Each point left by the moving source releases circular waves. Older
+        // circles grow behind newer ones, so their overlap forms the wake.
+        float r=length(p), width=9+age*3;
+        float d=r-age*44;
+        float fade=exp(-age*0.9)/sqrt(1+age*0.8)*smoothstep(0.0,0.06,age)
+            *(1-smoothstep(1.5,2.3,age));
+        gradient=p/max(r,0.01)*packetDerivative(d,width,0.58)*strength*fade*2.0;
     } else {
         bool rain=u.style.x==1;
         float seed=hash(u.placement.xy), angle=atan2(p.y,p.x), r=length(p);

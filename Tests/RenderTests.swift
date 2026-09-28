@@ -145,7 +145,13 @@ import ImageIO
         try renderer.writePNG(frame: click,width: 1600,height: 1000,to: output.appendingPathComponent("pond-click.png"))
         // Signed relief, directionality, refraction of fish, cache resizing and expiry.
         var wake = noFish
-        wake.ripples = [Ripple(position: SIMD2(850,500),age: 0.3,strength: 0.65,source: .motion,travel: SIMD2(100,0))]
+        func wakeTrail(axis: SIMD2<Float>) -> [Ripple] {
+            (0..<6).map { index in
+                Ripple(position: SIMD2(850,500) - axis * Float(index*20),age: 0.05 + Float(index)*0.12,
+                       strength: 0.45,source: .motion)
+            }
+        }
+        wake.ripples = wakeTrail(axis: SIMD2(1,0))
         let horizontal = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
         try renderer.writePNG(frame: wake,width: 1600,height: 1000,to: output.appendingPathComponent("pond-cursor-wake.png"))
         var bright=0, dark=0
@@ -154,7 +160,7 @@ import ImageIO
             if relief > 5 { bright += 1 }; if relief < -5 { dark += 1 }
         }
         precondition(bright > 100 && dark > 100, "Wakes need signed lit/dark relief")
-        wake.ripples[0].travel = SIMD2(0,100)
+        wake.ripples = wakeTrail(axis: SIMD2(0,1))
         let vertical = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
         precondition(delta(horizontal,vertical)>0.00001, "Motion direction must change wake orientation")
         func wakeExtent(_ bytes: [UInt8]) -> (Double,Double) {
@@ -167,7 +173,7 @@ import ImageIO
             return (xx,yy)
         }
         let h = wakeExtent(horizontal), v = wakeExtent(vertical)
-        precondition(h.0 > h.1*2 && v.1 > v.0*2, "Wake must follow its finite travel strip, not stamp circles")
+        precondition(h.0 > h.1*2 && v.1 > v.0*2, "Successive expanding rings follow the pointer path")
         func transverseWidth(_ bytes: [UInt8], axis: SIMD2<Float>, distances: ClosedRange<Int>) -> Double {
             let lateral = SIMD2(-axis.y, axis.x)
             var weightedWidth = 0.0, totalWeight = 0.0
@@ -181,13 +187,33 @@ import ImageIO
             return sqrt(weightedWidth / totalWeight)
         }
         for axis in [SIMD2<Float>(1,0), SIMD2<Float>(0,1), SIMD2<Float>(-1,0), simd_normalize(SIMD2<Float>(1,1))] {
-            var cone = wake; cone.ripples[0].travel = axis * 100
+            var cone = wake; cone.ripples = wakeTrail(axis: axis)
             let bytes = try renderer.renderRGBA(frame: cone,width: 1600,height: 1000)
             let front = transverseWidth(bytes,axis: axis,distances: 18...30)
             let rear = transverseWidth(bytes,axis: axis,distances: 65...77)
             print("Wake width along \(axis): front \(front), rear \(rear)")
             precondition(rear > front * 1.45, "Cursor wake must widen behind its narrow front in every direction")
         }
+        // One released impulse must have a circular wavefront, not two straight edges.
+        var ring = noFish
+        ring.ripples = [Ripple(position: SIMD2(850,500),age: 0.65,strength: 0.6,source: .motion)]
+        let ringPixels = try renderer.renderRGBA(frame: ring,width: 1600,height: 1000)
+        for angle in stride(from: Float(0),to: 2 * .pi,by: .pi / 4) {
+            let direction = SIMD2(cos(angle),sin(angle))
+            var changes = 0
+            for radius in 18...40 {
+                let point = SIMD2<Float>(850,500) + direction * Float(radius)
+                let i = (Int(1000-point.y)*1600+Int(point.x))*4
+                if (0..<3).contains(where: { ringPixels[i+$0] != plain[i+$0] }) { changes += 1 }
+            }
+            print("Released ring at angle \(angle): \(changes) changed radial samples")
+            precondition(changes > 5, "Released motion waves form arcs around the source in every direction")
+        }
+        ring.ripples[0].age = 1.1
+        let laterRing = try renderer.renderRGBA(frame: ring,width: 1600,height: 1000)
+        print("Released ring propagation delta: \(delta(ringPixels,laterRing))")
+        precondition(delta(ringPixels,laterRing) > 0.00001, "Released wavefronts travel after motion stops")
+        try renderer.writePNG(frame: ring,width: 1600,height: 1000,to: output.appendingPathComponent("pond-released-ring.png"))
         var refracted = wake
         refracted.fish = [FishState(id: 1,species: .koi,position: SIMD2(842,465),velocity: .zero,heading: 0,length: 95,depth: 0.3,phase: 0,panic: 0)]
         let wetFish = try renderer.renderRGBA(frame: refracted,width: 1600,height: 1000)
@@ -224,10 +250,10 @@ import ImageIO
             }}
             precondition(localChanges>100)
         }
-        wake.ripples[0].age = 2.3
+        for index in wake.ripples.indices { wake.ripples[index].age = 2.3 }
         let expiredWake = try renderer.renderRGBA(frame: wake,width: 1600,height: 1000)
         precondition(expiredWake == plain, "Expired wake leaves no painted residue")
-        print("PASS signed wake: \(bright) bright / \(dark) dark; \(refractedSamples) refracted fish samples, oriented strip, deterministic resize and expiry.")
+        print("PASS signed wake: \(bright) bright / \(dark) dark; \(refractedSamples) refracted fish samples, curved expanding wake, deterministic resize and expiry.")
         var landRipple = noFish
         landRipple.ripples = [Ripple(position: SIMD2(200,750),age: 1.0,strength: 1.8)]
         let ripplePixels = try renderer.renderRGBA(frame: landRipple,width: 1600,height: 1000)
@@ -381,7 +407,7 @@ import ImageIO
         storm.ripples = (0..<96).map { i in
             Ripple(position: SIMD2(350+Float(i%12)*70,250+Float(i/12)*60),
                    age: 0.15+Float(i%12)*0.09,strength: i<72 ? 0.24 : (i%2 == 0 ? 1 : 0.34),
-                   source: i<72 ? .rain : (i%2 == 0 ? .click : .motion),travel: i%2 == 0 ? .zero : SIMD2(60,20))
+                   source: i<72 ? .rain : (i%2 == 0 ? .click : .motion))
         }
         var stormTimings: [Double] = []
         for i in 0..<35 {

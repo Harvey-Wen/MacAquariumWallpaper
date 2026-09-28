@@ -19,8 +19,8 @@ private enum SimulationTests {
         try weatherModesTransitionAndStayDry()
         try populationAndShoreline()
         try waterClicksAndFalloff()
-        try directionalLeafForceAndRainBudget()
-        try directionalTravelResizes()
+        try radialMotionWavesAndRainBudget()
+        try motionSourcesFollowPathAndResize()
         try pointerMovementIsQuietAndBounded()
         try pointerReentryAndJumpDoNotBridge()
         try pointerAvoidanceIsVisibleAndLocal()
@@ -187,27 +187,27 @@ private enum SimulationTests {
         try expect(sim.fish.allSatisfy { $0.panic < 0.05 }, "fish recover after clicks")
     }
 
-    private static func directionalLeafForceAndRainBudget() throws {
-        let ripple = Ripple(position: SIMD2(800,500),age: 0.3,strength: 0.34,source: .motion,travel: SIMD2(60,0))
-        let behind = OceanSimulation.motionWaveForce(at: SIMD2(770,510), ripple: ripple)
-        let ahead = OceanSimulation.motionWaveForce(at: SIMD2(850,510), ripple: ripple)
-        let pastTail = OceanSimulation.motionWaveForce(at: SIMD2(700,510), ripple: ripple)
-        let farSide = OceanSimulation.motionWaveForce(at: SIMD2(770,600), ripple: ripple)
-        try expect(abs(behind.y)>0.1 && abs(behind.y)>abs(behind.x)*3, "leaf force follows outward wake slopes behind the segment")
-        try expect(ahead == .zero && pastTail == .zero && simd_length(farSide)<0.0001, "no radial push ahead, beyond the tail or outside the wave packet")
-        let rotated = Ripple(position: SIMD2(800,500),age: ripple.age,strength: ripple.strength,source: .motion,travel: SIMD2(0,60))
-        let rotatedForce = OceanSimulation.motionWaveForce(at: SIMD2(790,470), ripple: rotated)
-        try expect(simd_distance(rotatedForce,SIMD2(-behind.y,behind.x))<0.0001, "leaf force rotates with the same travel axis as visible waves")
-        func forceWidth(distance: Float) -> Float {
-            var weightedWidth: Float = 0, totalWeight: Float = 0
-            for across in -70...70 {
-                let point = ripple.position + SIMD2(-distance,Float(across))
-                let weight = simd_length(OceanSimulation.motionWaveForce(at: point,ripple: ripple))
-                weightedWidth += weight * Float(across*across); totalWeight += weight
+    private static func radialMotionWavesAndRainBudget() throws {
+        let ripple = Ripple(position: SIMD2(800,500),age: 0.3,strength: 0.34,source: .motion)
+        let right = OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(15,0),ripple: ripple)
+        let up = OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(0,15),ripple: ripple)
+        let left = OceanSimulation.motionWaveForce(at: ripple.position - SIMD2(15,0),ripple: ripple)
+        try expect(simd_length(right) > 0.1, "a motion source emits a curved wave in front as well as behind")
+        try expect(simd_distance(up,SIMD2(-right.y,right.x)) < 0.0001 && simd_distance(left,-right) < 0.0001,
+                   "each motion impulse expands radially about its original position")
+        try expect(OceanSimulation.motionWaveForce(at: ripple.position,ripple: ripple) == .zero, "wave center stays finite and still")
+        func forceRadius(age: Float) -> Float {
+            var sample = ripple; sample.age = age
+            var weightedRadius: Float = 0, totalWeight: Float = 0
+            for radius in 1...150 {
+                let weight = simd_length(OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(Float(radius),0),ripple: sample))
+                weightedRadius += weight * Float(radius); totalWeight += weight
             }
-            return sqrt(weightedWidth / totalWeight)
+            return weightedRadius / totalWeight
         }
-        try expect(forceWidth(distance: 44) > forceWidth(distance: 12) * 1.4, "leaf response widens toward the rear of the cone")
+        try expect(forceRadius(age: 0.8) > forceRadius(age: 0.25) * 2, "released rings keep expanding after the pointer moves away")
+        var expired = ripple; expired.age = 2.3
+        try expect(OceanSimulation.motionWaveForce(at: ripple.position + SIMD2(100,0),ripple: expired) == .zero, "released rings fully dissipate")
         let sim = OceanSimulation(size: SIMD2(1600,1000),seed: 7)
         sim.weather = .rainy
         for _ in 0..<180 { sim.update(deltaTime: 1/30) }
@@ -218,19 +218,24 @@ private enum SimulationTests {
         try expect(sim.ripples.count <= 96, "rain and interaction retain finite independent budgets")
     }
 
-    private static func directionalTravelResizes() throws {
+    private static func motionSourcesFollowPathAndResize() throws {
         let sim = OceanSimulation(size: SIMD2(1600,1000), seed: 7)
         sim.trackPointer(SIMD2(700,500))
         sim.update(deltaTime: 0.2)
         sim.trackPointer(SIMD2(730,520))
-        try expect(sim.ripples[0].travel == SIMD2(30,20), "accepted motion keeps direction and segment length")
+        try expect(sim.ripples[0].position == SIMD2(730,520), "accepted motion leaves a wave source on the path")
+        sim.update(deltaTime: 0.2)
+        sim.trackPointer(SIMD2(730,550))
+        try expect(sim.ripples[0].position == SIMD2(730,520) && sim.ripples[1].position == SIMD2(730,550),
+                   "turning keeps old circles anchored to the earlier path")
+        try expect(sim.ripples[0].age > sim.ripples[1].age, "older circles spread farther behind the pointer")
         sim.resize(to: SIMD2(1920,1200))
-        try expect(simd_distance(sim.ripples[0].travel, SIMD2(36,24)) < 0.001, "resize scales travel with scene geometry")
+        try expect(simd_distance(sim.ripples[0].position, SIMD2(876,624)) < 0.001, "resize maps released wave origins with scene geometry")
         let count = sim.ripples.count
         sim.trackPointer(SIMD2(900,600))
         try expect(sim.ripples.count == count, "resize resets pointer baseline")
         sim.click(at: SIMD2(900,600))
-        try expect(sim.ripples.suffix(2).allSatisfy { $0.travel == .zero && $0.source == .click }, "clicks retain independent radial impulses")
+        try expect(sim.ripples.suffix(2).allSatisfy { $0.source == .click }, "clicks retain independent radial impulses")
     }
 
     private static func pointerMovementIsQuietAndBounded() throws {
