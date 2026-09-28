@@ -341,8 +341,8 @@ final class OceanSimulation {
     private static func makeFish(in size: SIMD2<Float>, generator: inout SeededGenerator) -> [FishState] {
         let scale = max(size.x / 1600, size.y / 1000)
         var result: [FishState] = []
-        result.reserveCapacity(60)
-        for id in 0..<60 {
+        result.reserveCapacity(30)
+        for id in 0..<30 {
             let length = generator.float(in: 48...76) * scale
             var position = PondGeometry.point(for: SIMD2(0.5, 0.5), size: size)
             for _ in 0..<100 {
