@@ -33,6 +33,8 @@ final class TransparentMetalView: MTKView {
     var diagnosticURL: URL?
     private let backdrop: DesktopBackdrop
     private let drawingStore: FishDrawingStore
+    var onFishChanged: (() -> Void)?
+    private(set) var defaultFishError: String?
     private(set) var customFishErrors: [String] = []
     private(set) var backdropError: String?
     private(set) var sleeping = false
@@ -109,6 +111,9 @@ final class TransparentMetalView: MTKView {
             if let screen = NSScreen.screens.first { controller.input.refresh(screen: screen, force: true) }
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { $0.updateActivity() }
+        do {
+            for id in try self.drawingStore.deletedDefaultFish() { simulation.removeFish(identity: .builtIn(id)) }
+        } catch { defaultFishError = error.localizedDescription }
         let saved = self.drawingStore.load()
         customFishErrors = saved.errors
         for drawing in saved.drawings {
@@ -137,14 +142,32 @@ final class TransparentMetalView: MTKView {
         simulation.addCustomFish(appearanceID: drawing.id)
         if !enabled { enabled = true }
         else { updateBackdrop(); render(); writeDiagnostics() }
+        onFishChanged?()
+    }
+
+    func removeFish(identity: FishIdentity) throws {
+        guard simulation.fish.contains(where: { $0.identity == identity }) else { return }
+        switch identity {
+        case .builtIn(let id):
+            try drawingStore.removeDefaultFish(id: id)
+            defaultFishError = nil
+        case .custom(let id):
+            try drawingStore.remove(id: id)
+        }
+        simulation.removeFish(identity: identity)
+        if case .custom(let id) = identity { renderer.removeDrawing(id: id) }
+        updateBackdrop()
+        if enabled && !sleeping && !locked { render() }
+        writeDiagnostics()
+        onFishChanged?()
     }
 
     private func updateBackdrop() {
         do {
             if enabled, let screen = NSScreen.screens.first {
                 let pixels = screen.convertRectToBacking(screen.frame).size
-                let customIDs = simulation.fish.compactMap(\.customAppearanceID).map(\.uuidString).sorted().joined(separator: ",")
-                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)-\(customIDs)"
+                let fishIDs = simulation.fish.map { $0.identity.storageKey }.sorted().joined(separator: ",")
+                let key = "\(DesktopBackdrop.displayIdentifier(screen))-\(pixels.width)x\(pixels.height)-\(weather.rawValue)-\(fishIDs)"
                 try backdrop.apply(screen: screen, key: key) { url in
                     var frame = simulation.frame(waterStrength: 0.45)
                     frame.weatherAmount = weather == .rainy ? 1 : 0

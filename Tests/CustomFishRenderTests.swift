@@ -73,7 +73,18 @@ import MetalKit
         precondition(dominant(coloredBases, 514, 500, 0) && dominant(coloredBases, 1104, 500, 0), "base colors preserve red painted markings")
         try renderer.writePNG(frame: frame, width: width, height: height,
                               to: root.appendingPathComponent(".build/custom-fish-base-color.png"))
-        print("PASS custom fish rendering: selected base colors, oriented markings, independent textures, unchanged default and safe fallback")
+        let previewOne = try renderer.fishPreview(fish(0, 800, nil))
+        let previewTwo = try renderer.fishPreview(fish(1, 800, nil))
+        let previewPainted = try renderer.fishPreview(fish(1, 800, first.id))
+        precondition(previewOne.size == NSSize(width: 128, height: 64), "list previews have a consistent size")
+        precondition(previewOne.tiffRepresentation != previewTwo.tiffRepresentation, "default previews preserve individual patterns")
+        precondition(previewTwo.tiffRepresentation != previewPainted.tiffRepresentation, "custom preview uses registered painting")
+        precondition(renderer.frame.fish.isEmpty, "generating previews does not replace live renderer frame")
+        let previewBitmap = previewPainted.representations[0] as! NSBitmapImageRep
+        precondition((previewBitmap.colorAt(x: 128, y: 64)?.alphaComponent ?? 0) > 0.9, "preview contains a visible fish")
+        precondition((previewBitmap.colorAt(x: 0, y: 0)?.alphaComponent ?? 1) < 0.01, "preview background stays transparent")
+        try previewBitmap.representation(using: .png, properties: [:])!.write(to: root.appendingPathComponent(".build/fish-preview.png"))
+        print("PASS custom fish rendering: selected base colors, oriented markings, independent textures, unchanged default, safe fallback and actual fish previews")
     }
 
     static func drawing(tail: FishColor, head: FishColor) -> FishDrawing {

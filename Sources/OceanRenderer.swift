@@ -153,6 +153,26 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     func removeDrawing(id: UUID) { drawings.removeValue(forKey: id) }
 
+    func fishPreview(_ fish: FishState) throws -> NSImage {
+        var sample = fish
+        sample.position = SIMD2(128, 64)
+        sample.heading = 0
+        sample.length = 180
+        sample.depth = 0.15
+        sample.phase = 0
+        sample.panic = 0
+        let frame = OceanFrame(size: SIMD2(256, 128), time: 0, fish: [sample], ripples: [], waterStrength: 0)
+        let bytes = try renderRGBA(frame: frame, width: 256, height: 128, includeEnvironment: false)
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 256, pixelsHigh: 128,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 256 * 4, bitsPerPixel: 32),
+            let pixels = bitmap.bitmapData else { throw OceanRenderError.unavailable("无法生成鱼的预览。") }
+        bytes.withUnsafeBytes { pixels.update(from: $0.baseAddress!.assumingMemoryBound(to: UInt8.self), count: bytes.count) }
+        let image = NSImage(size: NSSize(width: 128, height: 64))
+        image.addRepresentation(bitmap)
+        return image
+    }
+
     func draw(in view: MTKView) {
         guard let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
@@ -184,7 +204,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         return true
     }
 
-    private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer) {
+    private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer,
+                        includeEnvironment: Bool = true) {
         guard let destination = pass.colorAttachments[0].texture,
               prepareTargets(width: destination.width, height: destination.height), let targets else { return }
         guard frame.waterStrength > 0 || frame.weatherAmount > 0 || simd_length_squared(frame.atmosphere) > 0 || !frame.fish.isEmpty || !frame.ripples.isEmpty || !frame.leaves.isEmpty else {
@@ -194,6 +215,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         scenePass.colorAttachments[0].texture = sampleCount > 1 ? targets.msaa : targets.scene
         scenePass.colorAttachments[0].resolveTexture = sampleCount > 1 ? targets.scene : nil
         scenePass.colorAttachments[0].loadAction = .clear
+        scenePass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         scenePass.colorAttachments[0].storeAction = sampleCount > 1 ? .multisampleResolve : .store
         scenePass.depthAttachment.texture = targets.depth
         scenePass.depthAttachment.loadAction = .clear
@@ -213,7 +235,9 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<EffectUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
-        effect(at: frame.size * 0.5, radius: 1, type: 0, strength: frame.waterStrength, seed: frame.weatherAmount)
+        if includeEnvironment {
+            effect(at: frame.size * 0.5, radius: 1, type: 0, strength: frame.waterStrength, seed: frame.weatherAmount)
+        }
         for fish in frame.fish.sorted(by: { $0.depth > $1.depth }) {
             guard let (buffer, count) = meshes[fish.species] else { continue }
             let drawing = fish.customAppearanceID.flatMap { drawings[$0] }
@@ -281,7 +305,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     }
 
     /// Deterministic offscreen render; rows run top-to-bottom, bytes are premultiplied RGBA8.
-    func renderRGBA(frame: OceanFrame, width: Int, height: Int) throws -> [UInt8] {
+    func renderRGBA(frame: OceanFrame, width: Int, height: Int, includeEnvironment: Bool = true) throws -> [UInt8] {
         guard width > 0, height > 0 else { throw OceanRenderError.unavailable("导出尺寸必须大于零。") }
         guard prepareTargets(width: width, height: height), let targets, let command = queue.makeCommandBuffer() else {
             throw OceanRenderError.unavailable("无法创建离屏画布。")
@@ -297,7 +321,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         pass.depthAttachment.loadAction = .clear
         pass.depthAttachment.storeAction = .dontCare
         pass.depthAttachment.clearDepth = 1
-        encode(frame, pass: pass, command: command)
+        encode(frame, pass: pass, command: command, includeEnvironment: includeEnvironment)
         command.commit()
         command.waitUntilCompleted()
         if let error = command.error { throw error }
