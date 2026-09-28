@@ -26,5 +26,5 @@
 - [x] Produce enlarged actual Metal previews for straight travel, turns and stopping. Inspect against the approved duck/boat reference. Run `bash scripts/test-simulation.sh` and `zsh scripts/test-renderer.sh --preview`; commit the verified implementation.
 
 ## 3. Launch
-- [ ] Build and verify app signature, gracefully terminate the running exact app bundle, launch the replacement and read fresh diagnostics.
-- [ ] Update planning/evidence files and commit validation. Show the result to the user.
+- [x] Build and verify app signature, gracefully terminate the running exact app bundle, launch the replacement and read fresh diagnostics.
+- [x] Update planning/evidence files and commit validation. Show the result to the user.
