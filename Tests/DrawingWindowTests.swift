@@ -40,6 +40,20 @@ struct DrawingWindowTests {
         check(controller.canvas.bounds.width > 600, "canvas layout")
         let red = controller.paletteButtons[0]
         let blue = controller.paletteButtons[3]
+        let white = controller.paletteButtons.first { $0.toolTip == "白色" }!
+        let baseWhite = controller.basePaletteButtons.first { $0.toolTip == "白色" }!
+        let baseBlue = controller.basePaletteButtons.first { $0.toolTip == "蓝色" }!
+        let baseGreen = controller.basePaletteButtons.first { $0.toolTip == "绿色" }!
+        check(baseWhite.isSelected, "white base preset selected initially")
+        let root = controller.window!.contentView!
+        for control in controller.paletteButtons + controller.basePaletteButtons + [controller.addButton!, controller.clearButton!] {
+            check(root.bounds.contains(control.convert(control.bounds, to: root)), "palette and actions stay inside window")
+        }
+        let brushRow = red.superview!.superview!
+        let baseRow = baseWhite.superview!.superview!
+        let actionRow = controller.eraseButton.superview!
+        check(!brushRow.convert(brushRow.bounds, to: root).intersects(baseRow.convert(baseRow.bounds, to: root)), "palettes have separate rows")
+        check(!baseRow.convert(baseRow.bounds, to: root).intersects(actionRow.convert(actionRow.bounds, to: root)), "base palette does not overlap actions")
         let redBitmap = red.bitmapImageRepForCachingDisplay(in: red.bounds)!
         let blueBitmap = blue.bitmapImageRepForCachingDisplay(in: blue.bounds)!
         red.cacheDisplay(in: red.bounds, to: redBitmap)
@@ -77,8 +91,28 @@ struct DrawingWindowTests {
 
         controller.clearButton.performClick(nil)
         check(controller.drawing.strokes.isEmpty, "clear removes all strokes")
+        controller.eraseButton.performClick(nil)
+        baseBlue.performClick(nil)
+        check(controller.eraseButton.state == .on, "base preset leaves brush tool unchanged")
+        check(baseBlue.isSelected && !baseWhite.isSelected, "base preset updates selection ring")
+        check(controller.baseColorWell.color == baseBlue.swatchColor, "base preset updates custom color well")
+        white.performClick(nil)
+        paint(controller.canvas)
+        check(controller.drawing.strokes[0].color == FishColor(red: 1, green: 1, blue: 1), "white preset paints white")
+        check(!controller.drawing.strokes[0].erasing && controller.eraseButton.state == .off, "white preset exits eraser")
+        let whiteBitmap = controller.canvas.bitmapImageRepForCachingDisplay(in: controller.canvas.bounds)!
+        controller.canvas.cacheDisplay(in: controller.canvas.bounds, to: whiteBitmap)
+        let whitePixel = whiteBitmap.colorAt(x: whiteBitmap.pixelsWide / 2, y: whiteBitmap.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+        check(whitePixel.redComponent > 0.95 && whitePixel.greenComponent > 0.95 && whitePixel.blueComponent > 0.95, "white paint covers colored fish")
+        let paintedStrokes = controller.drawing.strokes
+        baseGreen.performClick(nil)
+        check(controller.drawing.strokes == paintedStrokes && white.isSelected, "base preset preserves strokes and brush selection")
+        check(controller.drawing.resolvedBaseColor.green > controller.drawing.resolvedBaseColor.blue, "green base preset changes fish color")
+        controller.clearButton.performClick(nil)
+        check(baseGreen.isSelected && controller.drawing.resolvedBaseColor == controller.canvas.baseColor, "clear retains selected base")
         controller.baseColorWell.color = NSColor(calibratedRed: 0.1, green: 0.3, blue: 0.85, alpha: 1)
         _ = controller.baseColorWell.target?.perform(controller.baseColorWell.action, with: controller.baseColorWell)
+        check(!controller.basePaletteButtons.contains { $0.isSelected }, "custom base clears preset selection")
         let bodyBlue = controller.drawing.resolvedBaseColor
         check(bodyBlue.blue > 0.7 && controller.canvas.baseColor == bodyBlue, "base selection updates draft and canvas")
         let canvasBitmap = controller.canvas.bitmapImageRepForCachingDisplay(in: controller.canvas.bounds)!
@@ -88,6 +122,7 @@ struct DrawingWindowTests {
         controller.widthSlider.doubleValue = 0.05
         controller.colorWell.color = NSColor(calibratedRed: 0.2, green: 0.4, blue: 0.6, alpha: 1)
         _ = controller.colorWell.target?.perform(controller.colorWell.action, with: controller.colorWell)
+        check(!controller.paletteButtons.contains { $0.isSelected }, "custom brush clears preset selection")
         paint(controller.canvas)
         controller.baseColorWell.color = NSColor(calibratedRed: 0.2, green: 0.8, blue: 0.15, alpha: 1)
         _ = controller.baseColorWell.target?.perform(controller.baseColorWell.action, with: controller.baseColorWell)
@@ -108,6 +143,7 @@ struct DrawingWindowTests {
         check(controller.drawing.strokes.isEmpty, "success resets next draft")
         check(controller.drawing.resolvedBaseColor == FishColor(red: 1, green: 1, blue: 1)
               && controller.canvas.baseColor == controller.drawing.resolvedBaseColor, "new fish resets base to white")
+        check(baseWhite.isSelected && controller.basePaletteButtons.filter { $0.isSelected }.count == 1, "new fish resets white base selection ring")
 
         controller.showWindow(nil)
         paint(controller.canvas)
