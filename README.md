@@ -31,7 +31,7 @@ open build/MacAquariumWallpaper.app
 
 应用只观察鼠标事件和公开窗口矩形，不全局监听键盘、不采集屏幕像素、不发送信息。启动不请求辅助功能或屏幕录制权限。首版仅渲染主屏；主屏尺寸变化后重新布局，并更新静态背景。背景图按屏幕实际像素生成，在开启、鱼群或显示器变化时更新；菜单栏静态底图不随天气切换刷新，暂停、休眠和锁屏保留背景。休眠、锁屏停止绘制，唤醒尊重暂停状态；系统启用“减少动态效果”时静止显示。目标帧率为 30 FPS。
 
-恢复记录保存在 `~/Library/Application Support/local.macaquariumwallpaper.app/DesktopBackdrop/`，与应用安装位置无关；异常退出后下次启动恢复，断开的显示器保留记录等待重连。成功更新或恢复后删除旧的生成图片。备份或恢复失败会显示在菜单状态及诊断文件中。系统原选项为空时按原样传回，macOS 可能随后显示默认的缩放、裁切和填充色键。
+恢复记录保存在 `~/Library/Application Support/local.macaquariumwallpaper.app/DesktopBackdrop/`，与应用安装位置无关；同一用户的实例在读取记录前取得目录独占锁，第二实例拒绝接管。异常退出后下次启动恢复，断开的显示器保留记录等待重连。成功更新或恢复后删除旧的生成图片。增删鱼先更新界面，静态背景在后台合并生成；退出会等待导出收尾和原背景确认。备份或恢复失败会显示在菜单状态及诊断文件中。缺少原背景记录时不会猜测或覆盖原图信息，也不会删除系统仍在使用的池塘图片。系统原选项为空时按原样传回，macOS 可能随后显示默认的缩放、裁切和填充色键。
 
 菜单栏透明度和色调仍由 macOS 控制，应用不修改“减少透明度”等系统偏好。公开接口只能恢复所返回的图片 URL 与选项，无法保证动态壁纸、轮播或不同 Space 的额外系统状态；菜单栏实际视觉和多 Space 行为仍需人工检查。
 
@@ -48,9 +48,20 @@ bash scripts/test-custom-fish-desktop.sh
 zsh scripts/test-renderer.sh
 bash scripts/test-desktop.sh
 bash scripts/test-desktop.sh --weather-only
+bash scripts/test-backdrop.sh
+zsh scripts/test-async-renderer.sh
+bash scripts/test-canvas-cache.sh
+bash scripts/test-diagnostics.sh
+bash scripts/test-performance.sh
+bash scripts/test-display-performance.sh --baseline
+bash scripts/test-display-performance.sh
 ```
 
-`--weather-only` 使用临时目录和模拟壁纸接口，检查所有天气组合、快速切换、暂停恢复及同屏通知，且不更改系统背景。完整桌面测试会短暂创建覆盖层，并短暂更换主屏背景，检查层级、鼠标穿透、天气、暂停、恢复及原背景 URL/选项复原；还覆盖恢复日志、用户更换背景和备份失败。渲染测试在 `.build/render-validation/` 生成实际 Metal 帧；`zsh scripts/test-renderer.sh --preview` 还会生成动态预览。测试图不是用户壁纸截图。实测结果和未覆盖的人工操作见 [验收记录](docs/verification.md)。
+普通桌面、天气和鱼群集成测试默认使用临时数据目录与模拟壁纸接口，不写用户鱼库、不更改真实壁纸。完整桌面测试会短暂创建覆盖层，验证层级、鼠标穿透、暂停、恢复和异步背景操作；背景专项测试覆盖跨进程竞争、崩溃、迟到、取消和失败。画布缓存测试自动编译评审提交的旧画布作为像素参考。
+
+真实壁纸验收仅通过 `bash scripts/test-desktop.sh --real-wallpaper` 显式执行：先正常退出已有实例，测试取得与产品相同的独占保护后才读取和更改背景。已有实例运行时会拒绝执行。原恢复信息已缺失时需先由用户指定可信原图，不能靠验收测试推断。
+
+渲染测试在 `.build/render-validation/` 生成实际 Metal 帧；`zsh scripts/test-renderer.sh --preview` 还会生成动态预览。测试图不是用户壁纸截图。性能脚本分别测量离屏读回/导出、正常显示、Metal分配及进程峰值RSS，不读取用户鱼库。实测对比、覆盖范围和运行实例状态见 [优化验收记录](docs/optimization-acceptance-2026-09-28.md)。
 
 诊断运行需先退出已有实例：
 
@@ -59,4 +70,4 @@ build/MacAquariumWallpaper.app/Contents/MacOS/MacAquariumWallpaper \
   --diagnostics "$PWD/build/runtime.json"
 ```
 
-诊断文件只包含帧计数、鱼/落叶/水波数量、天气、输入计数、背景错误及窗口属性。当前为本地 ad-hoc 签名构建，未公证或对外发布。
+诊断文件包含场景和输入计数、背景所有权/记录数量/最近恢复结果/本次运行的历史失败，以及最近300个样本的CPU/GPU耗时、帧间隔、长帧数和背景导出耗时。正常显示GPU与离屏GPU单独统计，后台导出总耗时与主线程提交耗时单独统计；还记录Metal分配、目标重建和雨雪上传分配计数。关闭互动后不再查询窗口几何，重新开启时刷新。当前为本地 ad-hoc 签名构建，未公证或对外发布。
