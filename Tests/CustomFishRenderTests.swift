@@ -62,7 +62,18 @@ import MetalKit
         renderer.removeDrawing(id: first.id)
         let removed = try render()
         precondition(removed == original, "removing a drawing must restore original appearance")
-        print("PASS custom fish rendering: oriented body colors, two independent textures, unchanged default and safe fallback")
+        var blueBase = first, greenBase = second
+        blueBase.baseColor = FishColor(red: 0.05, green: 0.15, blue: 0.95)
+        greenBase.baseColor = FishColor(red: 0.1, green: 0.9, blue: 0.08)
+        try renderer.registerDrawing(blueBase)
+        try renderer.registerDrawing(greenBase)
+        frame.fish = [fish(1, 550, first.id), fish(2, 1050, second.id)]
+        let coloredBases = try render()
+        precondition(dominant(coloredBases, 575, 490, 2) && dominant(coloredBases, 1075, 490, 1), "each fish renders its selected base color")
+        precondition(dominant(coloredBases, 514, 500, 0) && dominant(coloredBases, 1104, 500, 0), "base colors preserve red painted markings")
+        try renderer.writePNG(frame: frame, width: width, height: height,
+                              to: root.appendingPathComponent(".build/custom-fish-base-color.png"))
+        print("PASS custom fish rendering: selected base colors, oriented markings, independent textures, unchanged default and safe fallback")
     }
 
     static func drawing(tail: FishColor, head: FishColor) -> FishDrawing {

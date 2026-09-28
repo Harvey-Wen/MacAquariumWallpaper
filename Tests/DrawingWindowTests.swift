@@ -77,21 +77,37 @@ struct DrawingWindowTests {
 
         controller.clearButton.performClick(nil)
         check(controller.drawing.strokes.isEmpty, "clear removes all strokes")
+        controller.baseColorWell.color = NSColor(calibratedRed: 0.1, green: 0.3, blue: 0.85, alpha: 1)
+        _ = controller.baseColorWell.target?.perform(controller.baseColorWell.action, with: controller.baseColorWell)
+        let bodyBlue = controller.drawing.resolvedBaseColor
+        check(bodyBlue.blue > 0.7 && controller.canvas.baseColor == bodyBlue, "base selection updates draft and canvas")
+        let canvasBitmap = controller.canvas.bitmapImageRepForCachingDisplay(in: controller.canvas.bounds)!
+        controller.canvas.cacheDisplay(in: controller.canvas.bounds, to: canvasBitmap)
+        let bodyPixel = canvasBitmap.colorAt(x: canvasBitmap.pixelsWide / 2, y: canvasBitmap.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+        check(bodyPixel.blueComponent > bodyPixel.redComponent + 0.3, "base selection visibly recolors fish")
         controller.widthSlider.doubleValue = 0.05
         controller.colorWell.color = NSColor(calibratedRed: 0.2, green: 0.4, blue: 0.6, alpha: 1)
         _ = controller.colorWell.target?.perform(controller.colorWell.action, with: controller.colorWell)
         paint(controller.canvas)
+        controller.baseColorWell.color = NSColor(calibratedRed: 0.2, green: 0.8, blue: 0.15, alpha: 1)
+        _ = controller.baseColorWell.target?.perform(controller.baseColorWell.action, with: controller.baseColorWell)
+        let bodyGreen = controller.drawing.resolvedBaseColor
+        check(controller.drawing.strokes.count == 1 && bodyGreen.green > 0.7, "changing base keeps painted strokes")
         check(abs(controller.drawing.strokes[0].width - 0.05) < 0.001, "width slider changes brush width")
         let expectedBlue = Float(controller.colorWell.color.usingColorSpace(.deviceRGB)!.blueComponent)
         check(abs(controller.drawing.strokes[0].color.blue - expectedBlue) < 0.01, "custom color changes paint")
         controller.addButton.performClick(nil)
         check(attempts == 1, "add invokes callback")
         check(controller.drawing.strokes.count == 1, "callback failure preserves draft")
+        check(controller.drawing.resolvedBaseColor == bodyGreen, "callback failure preserves base color")
         if let sheet = controller.window!.attachedSheet { controller.window!.endSheet(sheet) }
         controller.addButton.performClick(nil)
         check(attempts == 2, "retry invokes callback")
         check(submitted?.strokes.count == 1, "retry submits preserved draft")
+        check(submitted?.resolvedBaseColor == bodyGreen, "add submits selected base color")
         check(controller.drawing.strokes.isEmpty, "success resets next draft")
+        check(controller.drawing.resolvedBaseColor == FishColor(red: 1, green: 1, blue: 1)
+              && controller.canvas.baseColor == controller.drawing.resolvedBaseColor, "new fish resets base to white")
 
         controller.showWindow(nil)
         paint(controller.canvas)

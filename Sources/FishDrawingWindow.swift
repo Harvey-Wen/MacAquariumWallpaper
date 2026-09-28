@@ -20,6 +20,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private(set) var drawing = FishDrawing(id: UUID(), strokes: [])
     private(set) var canvas: FishDrawingCanvas!
     private(set) var colorWell: NSColorWell!
+    private(set) var baseColorWell: NSColorWell!
     private(set) var widthSlider: NSSlider!
     private(set) var eraseButton: NSButton!
     private(set) var undoButton: NSButton!
@@ -57,7 +58,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
         let title = NSTextField(labelWithString: "画一条自己的锦鲤")
         title.font = .systemFont(ofSize: 21, weight: .semibold)
-        let hint = NSTextField(labelWithString: "在白色鱼身上画花纹，鱼鳍和眼睛会保留。")
+        let hint = NSTextField(labelWithString: "选择鱼身底色，再画上花纹；鱼鳍和眼睛会保留。")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
         let heading = NSStackView(views: [title, hint])
@@ -104,7 +105,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         colorWell.color = selectedColor
         colorWell.target = self
         colorWell.action = #selector(selectCustomColor(_:))
-        colorWell.setAccessibilityLabel("自选颜色")
+        colorWell.setAccessibilityLabel("画笔颜色")
         palette.addArrangedSubview(colorWell)
 
         widthSlider = NSSlider(value: 0.025, minValue: 0.008, maxValue: 0.075, target: self, action: nil)
@@ -120,7 +121,9 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         undoButton.keyEquivalent = "z"
         undoButton.keyEquivalentModifierMask = .command
         clearButton = makeButton("清空", action: #selector(clear(_:)))
-        let tools = NSStackView(views: [palette, widthLabel, widthSlider, eraseButton, undoButton, clearButton])
+        let brushLabel = NSTextField(labelWithString: "画笔")
+        brushLabel.font = .systemFont(ofSize: 12)
+        let tools = NSStackView(views: [brushLabel, palette, widthLabel, widthSlider, eraseButton, undoButton, clearButton])
         tools.orientation = .horizontal
         tools.alignment = .centerY
         tools.spacing = 12
@@ -135,7 +138,19 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         footer.spacing = 10
         footer.alignment = .centerY
 
-        for view in [heading, canvas!, tools, footer] {
+        baseColorWell = NSColorWell(frame: NSRect(x: 0, y: 0, width: 40, height: 28))
+        baseColorWell.color = .white
+        baseColorWell.target = self
+        baseColorWell.action = #selector(selectBaseColor(_:))
+        baseColorWell.setAccessibilityLabel("鱼身底色")
+        let baseLabel = NSTextField(labelWithString: "鱼身底色")
+        baseLabel.font = .systemFont(ofSize: 12)
+        let baseTools = NSStackView(views: [baseLabel, baseColorWell!])
+        baseTools.orientation = .horizontal
+        baseTools.alignment = .centerY
+        baseTools.spacing = 8
+
+        for view in [heading, canvas!, tools, baseTools, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
@@ -148,6 +163,8 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
             canvas.heightAnchor.constraint(equalToConstant: 338),
             tools.topAnchor.constraint(equalTo: canvas.bottomAnchor, constant: 15),
             tools.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
+            baseTools.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
+            baseTools.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             footer.trailingAnchor.constraint(equalTo: canvas.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -19)
         ])
@@ -178,6 +195,12 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         for button in paletteButtons {
             button.isSelected = false
         }
+    }
+
+    @objc private func selectBaseColor(_ sender: NSColorWell) {
+        guard let color = sender.color.usingColorSpace(.deviceRGB) else { return }
+        drawing.baseColor = FishColor(red: Float(color.redComponent), green: Float(color.greenComponent), blue: Float(color.blueComponent))
+        canvas.baseColor = drawing.resolvedBaseColor
     }
 
     @objc private func toggleEraser(_ sender: Any?) {
@@ -220,6 +243,8 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         drawing = FishDrawing(id: UUID(), strokes: [])
+        baseColorWell.color = .white
+        canvas.baseColor = drawing.resolvedBaseColor
         canvas.resetActiveStroke()
         erasing = false
         updateButtons()
@@ -227,6 +252,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 }
 
 final class FishDrawingCanvas: NSView {
+    var baseColor = FishColor(red: 1, green: 1, blue: 1) { didSet { needsDisplay = true } }
     var strokes: [FishStroke] = [] { didSet { needsDisplay = true } }
     var onStroke: ((FishStroke) -> Void)?
     var currentTool: (() -> (FishColor, Float, Bool)?)?
@@ -281,7 +307,7 @@ final class FishDrawingCanvas: NSView {
         drawFins(in: context)
         let path = cachedBodyPath()
         context.addPath(path)
-        context.setFillColor(NSColor(calibratedWhite: 0.97, alpha: 1).cgColor)
+        context.setFillColor(CGColor(red: CGFloat(baseColor.red), green: CGFloat(baseColor.green), blue: CGFloat(baseColor.blue), alpha: 1))
         context.fillPath()
         context.saveGState()
         context.addPath(path)
