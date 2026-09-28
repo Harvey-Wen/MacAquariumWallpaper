@@ -38,6 +38,16 @@ struct DrawingWindowTests {
         controller.showWindow(nil)
         controller.window!.layoutIfNeeded()
         check(controller.canvas.bounds.width > 600, "canvas layout")
+        let red = controller.paletteButtons[0]
+        let blue = controller.paletteButtons[3]
+        let redBitmap = red.bitmapImageRepForCachingDisplay(in: red.bounds)!
+        let blueBitmap = blue.bitmapImageRepForCachingDisplay(in: blue.bounds)!
+        red.cacheDisplay(in: red.bounds, to: redBitmap)
+        blue.cacheDisplay(in: blue.bounds, to: blueBitmap)
+        let redCenter = redBitmap.colorAt(x: redBitmap.pixelsWide / 2, y: redBitmap.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+        let blueCenter = blueBitmap.colorAt(x: blueBitmap.pixelsWide / 2, y: blueBitmap.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+        check(redCenter.redComponent > redCenter.blueComponent + 0.3, "red swatch visibly filled")
+        check(blueCenter.blueComponent > blueCenter.redComponent + 0.3, "blue swatch visibly filled")
         paint(controller.canvas)
         check(controller.drawing.strokes.count == 1, "paint commits a stroke")
         check(controller.drawing.strokes[0].points.count == 2, "drag records both points")

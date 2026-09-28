@@ -1,5 +1,20 @@
 import AppKit
 
+final class FishPaletteButton: NSButton {
+    var swatchColor: NSColor = .red { didSet { needsDisplay = true } }
+    var isSelected = false { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let circle = bounds.insetBy(dx: 3, dy: 3)
+        swatchColor.setFill()
+        NSBezierPath(ovalIn: circle).fill()
+        (isSelected ? NSColor.labelColor : NSColor.separatorColor).setStroke()
+        let outline = NSBezierPath(ovalIn: circle.insetBy(dx: isSelected ? -2 : 0, dy: isSelected ? -2 : 0))
+        outline.lineWidth = isSelected ? 2 : 1
+        outline.stroke()
+    }
+}
+
 final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private let onAdd: (FishDrawing) throws -> Void
     private(set) var drawing = FishDrawing(id: UUID(), strokes: [])
@@ -11,7 +26,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private(set) var clearButton: NSButton!
     private(set) var cancelButton: NSButton!
     private(set) var addButton: NSButton!
-    private var paletteButtons: [NSButton] = []
+    private(set) var paletteButtons: [FishPaletteButton] = []
     private var selectedColor = NSColor.systemRed
     private var erasing = false
 
@@ -71,14 +86,11 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         let colors: [NSColor] = [.systemRed, .systemOrange, .systemYellow, .systemBlue, .black]
         let names = ["红色", "橙色", "黄色", "蓝色", "黑色"]
         for (index, color) in colors.enumerated() {
-            let button = NSButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+            let button = FishPaletteButton(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
             button.title = ""
-            button.bezelStyle = .regularSquare
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 14
-            button.layer?.backgroundColor = color.cgColor
-            button.layer?.borderWidth = index == 0 ? 3 : 1
-            button.layer?.borderColor = index == 0 ? NSColor.labelColor.cgColor : NSColor.separatorColor.cgColor
+            button.isBordered = false
+            button.swatchColor = color
+            button.isSelected = index == 0
             button.tag = index
             button.target = self
             button.action = #selector(selectPalette(_:))
@@ -155,8 +167,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         erasing = false
         updateButtons()
         for (index, button) in paletteButtons.enumerated() {
-            button.layer?.borderWidth = index == sender.tag ? 3 : 1
-            button.layer?.borderColor = index == sender.tag ? NSColor.labelColor.cgColor : NSColor.separatorColor.cgColor
+            button.isSelected = index == sender.tag
         }
     }
 
@@ -165,8 +176,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         erasing = false
         updateButtons()
         for button in paletteButtons {
-            button.layer?.borderWidth = 1
-            button.layer?.borderColor = NSColor.separatorColor.cgColor
+            button.isSelected = false
         }
     }
 
@@ -220,6 +230,7 @@ final class FishDrawingCanvas: NSView {
     var currentTool: (() -> (FishColor, Float, Bool)?)?
     private(set) var activeStroke: FishStroke?
     private var bodyPath: CGPath?
+    private var finPaths: [CGPath] = []
     private var bodySize = CGSize.zero
     private var leftCanvas = false
     private var dragTool: (FishColor, Float, Bool)?
@@ -229,6 +240,21 @@ final class FishDrawingCanvas: NSView {
     private func cachedBodyPath() -> CGPath {
         if bodyPath == nil || bodySize != bounds.size {
             bodyPath = FishDrawing.bodyPath(width: Int(bounds.width), height: Int(bounds.height))
+            let finOutlines = (0..<3).map { _ in CGMutablePath() }
+            let vertices = FishMesh(species: .koi).vertices
+            for index in stride(from: 0, to: vertices.count, by: 3) {
+                let material = Int(vertices[index].detail.x)
+                guard (1...3).contains(material) else { continue }
+                let path = finOutlines[material - 1]
+                for offset in 0..<3 {
+                    let vertex = vertices[index + offset].position
+                    let point = CGPoint(x: CGFloat((vertex.x + 0.6) / 1.2) * bounds.width,
+                                        y: CGFloat((vertex.y + 0.3) / 0.6) * bounds.height)
+                    if offset == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                }
+                path.closeSubpath()
+            }
+            finPaths = finOutlines
             bodySize = bounds.size
         }
         return bodyPath!
@@ -285,20 +311,10 @@ final class FishDrawingCanvas: NSView {
     }
 
     private func drawFins(in context: CGContext) {
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * bounds.width, y: (1 - y) * bounds.height) }
-        let fins: [[CGPoint]] = [
-            [p(0.25,0.48), p(0.04,0.29), p(0.07,0.50), p(0.04,0.71)],
-            [p(0.63,0.39), p(0.59,0.16), p(0.46,0.10), p(0.48,0.39)],
-            [p(0.63,0.61), p(0.59,0.84), p(0.46,0.90), p(0.48,0.61)],
-            [p(0.41,0.44), p(0.36,0.30), p(0.32,0.35)],
-            [p(0.41,0.56), p(0.36,0.70), p(0.32,0.65)]
-        ]
-        for fin in fins {
-            context.beginPath()
-            context.move(to: fin[0])
-            for point in fin.dropFirst() { context.addLine(to: point) }
-            context.closePath()
-            context.setFillColor(NSColor(calibratedWhite: 0.91, alpha: 1).cgColor)
+        _ = cachedBodyPath()
+        for (index, path) in finPaths.enumerated() {
+            context.addPath(path)
+            context.setFillColor(NSColor(calibratedWhite: 0.95, alpha: index == 2 ? 0.45 : 0.62).cgColor)
             context.fillPath()
         }
     }
