@@ -6,13 +6,14 @@ import simd
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = FishDrawingStore(directory: directory)
-        let first = FishDrawing(id: UUID(), strokes: [FishStroke(points: [FishPoint(x: 0.5, y: 0.5)], color: FishColor(red: 1, green: 0, blue: 0), width: 0.04, erasing: false)])
-        let second = FishDrawing(id: UUID(), strokes: [])
+        let first = FishDrawing(id: UUID(), strokes: [FishStroke(points: [FishPoint(x: 0.5, y: 0.5)], color: FishColor(red: 1, green: 0, blue: 0), width: 0.04, erasing: false)], name: "小锦 🐟")
+        let second = FishDrawing(id: UUID(), strokes: [], name: "小锦 🐟")
         try store.save(first)
         try store.save(second)
         var loaded = store.load()
         try expect(loaded.errors.isEmpty && Set(loaded.drawings.map(\.id)) == Set([first.id, second.id]), "separate drawings round trip")
         try expect(loaded.drawings.first(where: { $0.id == first.id }) == first, "stroke data round trips")
+        try expect(loaded.drawings.allSatisfy { $0.name == "小锦 🐟" }, "Unicode names persist separately even when equal")
 
         let legacyDirectory = directory.appendingPathComponent("legacy")
         try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
@@ -23,6 +24,7 @@ import simd
         try expect(legacy.errors.isEmpty && legacy.drawings.count == 1 &&
             legacy.drawings[0].resolvedBaseColor == FishColor(red: 1, green: 1, blue: 1),
             "old JSON without baseColor uses white")
+        try expect(legacy.drawings[0].name == nil, "old JSON without name remains unnamed")
 
         let blue = FishColor(red: 0, green: 0, blue: 1)
         var painted = first

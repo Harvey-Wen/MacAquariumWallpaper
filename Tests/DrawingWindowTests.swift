@@ -131,25 +131,31 @@ struct DrawingWindowTests {
         check(abs(controller.drawing.strokes[0].width - 0.05) < 0.001, "width slider changes brush width")
         let expectedBlue = Float(controller.colorWell.color.usingColorSpace(.deviceRGB)!.blueComponent)
         check(abs(controller.drawing.strokes[0].color.blue - expectedBlue) < 0.01, "custom color changes paint")
+        controller.nameField.stringValue = "  小锦 🐟  "
         controller.addButton.performClick(nil)
         check(attempts == 1, "add invokes callback")
         check(controller.drawing.strokes.count == 1, "callback failure preserves draft")
         check(controller.drawing.resolvedBaseColor == bodyGreen, "callback failure preserves base color")
+        check(controller.drawing.name == "小锦 🐟" && controller.nameField.stringValue == "  小锦 🐟  ", "callback failure preserves typed name")
         if let sheet = controller.window!.attachedSheet { controller.window!.endSheet(sheet) }
         controller.addButton.performClick(nil)
         check(attempts == 2, "retry invokes callback")
         check(submitted?.strokes.count == 1, "retry submits preserved draft")
         check(submitted?.resolvedBaseColor == bodyGreen, "add submits selected base color")
+        check(submitted?.name == "小锦 🐟", "add submits trimmed Unicode name")
+        check(controller.nameField.stringValue.isEmpty && controller.drawing.name == nil, "new fish resets name")
         check(controller.drawing.strokes.isEmpty, "success resets next draft")
         check(controller.drawing.resolvedBaseColor == FishColor(red: 1, green: 1, blue: 1)
               && controller.canvas.baseColor == controller.drawing.resolvedBaseColor, "new fish resets base to white")
         check(baseWhite.isSelected && controller.basePaletteButtons.filter { $0.isSelected }.count == 1, "new fish resets white base selection ring")
 
         controller.showWindow(nil)
+        controller.nameField.stringValue = "取消的草稿"
         paint(controller.canvas)
         controller.cancelButton.performClick(nil)
         controller.showWindow(nil)
         check(controller.drawing.strokes.isEmpty, "cancel/close resets draft")
+        check(controller.nameField.stringValue.isEmpty, "cancel clears draft name")
         paint(controller.canvas)
         mouse(controller.canvas, .leftMouseDown, x: 0.5, y: 0.5)
         mouse(controller.canvas, .leftMouseDragged, x: 0.55, y: 0.5)
@@ -166,7 +172,9 @@ struct DrawingWindowTests {
         check(controller.drawing.strokes.isEmpty, "reopen has no committed ink")
         paint(controller.canvas)
         check(controller.drawing.strokes.count == 1, "new stroke independent after reopen")
-        controller.window!.close()
+        controller.nameField.stringValue = "  \n  "
+        controller.addButton.performClick(nil)
+        check(submitted?.name == nil, "blank name is optional")
         print("DrawingWindowTests passed")
     }
 }

@@ -19,6 +19,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     private let onAdd: (FishDrawing) throws -> Void
     private(set) var drawing = FishDrawing(id: UUID(), strokes: [])
     private(set) var canvas: FishDrawingCanvas!
+    private(set) var nameField: NSTextField!
     private(set) var colorWell: NSColorWell!
     private(set) var baseColorWell: NSColorWell!
     private(set) var widthSlider: NSSlider!
@@ -66,6 +67,17 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         heading.orientation = .vertical
         heading.alignment = .leading
         heading.spacing = 5
+
+        let nameLabel = NSTextField(labelWithString: "名字")
+        nameLabel.font = .systemFont(ofSize: 12)
+        nameField = NSTextField(string: "")
+        nameField.placeholderString = "给它起个名字（选填）"
+        nameField.setAccessibilityLabel("鱼的名字")
+        nameField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        let nameTools = NSStackView(views: [nameLabel, nameField!])
+        nameTools.orientation = .horizontal
+        nameTools.alignment = .centerY
+        nameTools.spacing = 10
 
         canvas = FishDrawingCanvas(frame: .zero)
         canvas.translatesAutoresizingMaskIntoConstraints = false
@@ -151,13 +163,15 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
         baseTools.alignment = .centerY
         baseTools.spacing = 12
 
-        for view in [heading, canvas!, brushTools, tools, baseTools, footer] {
+        for view in [heading, nameTools, canvas!, brushTools, tools, baseTools, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         NSLayoutConstraint.activate([
             heading.topAnchor.constraint(equalTo: root.topAnchor, constant: 22),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+            nameTools.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
+            nameTools.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
             canvas.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 17),
             canvas.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
             canvas.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -28),
@@ -258,6 +272,9 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
     @objc private func cancel(_ sender: Any?) { window?.close() }
 
     @objc private func addToPond(_ sender: Any?) {
+        window?.makeFirstResponder(nil)
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        drawing.name = name.isEmpty ? nil : name
         do {
             try onAdd(drawing)
             window?.close()
@@ -276,6 +293,7 @@ final class FishDrawingWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         drawing = FishDrawing(id: UUID(), strokes: [])
+        nameField.stringValue = ""
         baseColorWell.color = .white
         for (index, button) in basePaletteButtons.enumerated() {
             button.isSelected = index == 0

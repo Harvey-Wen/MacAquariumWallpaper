@@ -28,6 +28,7 @@ struct FishDrawing: Codable, Equatable {
     var id: UUID
     var strokes: [FishStroke]
     var baseColor: FishColor? = nil
+    var name: String? = nil
 
     var resolvedBaseColor: FishColor { baseColor ?? FishColor(red: 1, green: 1, blue: 1) }
 
