@@ -25,6 +25,20 @@ final class OceanSimulation {
         fish = Self.makeFish(in: self.size, generator: &generator)
     }
 
+    func addCustomFish(appearanceID: UUID) {
+        guard !fish.contains(where: { $0.customAppearanceID == appearanceID }) else { return }
+        let scale = max(size.x / 1600, size.y / 1000)
+        let length = generator.float(in: 48...76) * scale
+        let position = randomWaterPoint(margin: length * 0.5 + 20)
+            ?? PondGeometry.point(for: SIMD2(0.5, 0.5), size: size)
+        let angle = generator.float(in: 0...(2 * .pi))
+        let direction = SIMD2(cos(angle), sin(angle))
+        fish.append(FishState(id: (fish.map(\.id).max() ?? -1) + 1, species: .koi,
+            position: position, velocity: direction * generator.float(in: 34...52) * scale,
+            heading: angle, length: length, depth: generator.float(in: 0.25...0.8),
+            phase: generator.float(in: 0...(2 * .pi)), panic: 0, customAppearanceID: appearanceID))
+    }
+
     func update(deltaTime: Float) {
         guard deltaTime.isFinite, deltaTime > 0 else { return }
         let elapsed = min(deltaTime, 1)

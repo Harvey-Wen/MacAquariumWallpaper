@@ -20,6 +20,7 @@ struct FishState {
     var depth: Float
     var phase: Float
     var panic: Float
+    var customAppearanceID: UUID? = nil
 }
 
 struct Ripple {
