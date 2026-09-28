@@ -111,6 +111,19 @@ import ImageIO
             precondition(timings[14] < 1000/30, "New weather fits the GPU frame budget")
             print("GPU \(weather.rawValue) 3024x1964: median \(timings[7]) ms; max \(timings[14]) ms.")
         }
+        var maximum = snowFrame
+        maximum.precipitation = (0..<1600).map { snowFrame.precipitation[$0 % snowFrame.precipitation.count] }
+        maximum.surfaceSnow = (0..<1200).map { snowFrame.surfaceSnow[$0 % snowFrame.surfaceSnow.count] }
+        let frozenMaximum = try renderer.renderRGBA(frame: maximum, width: 800, height: 500)
+        // Completion handlers can occupy a second slot briefly even after waitUntilCompleted.
+        for _ in 0..<6 { _ = try renderer.renderRGBA(frame: maximum, width: 800, height: 500) }
+        let allocations = renderer.particleBufferAllocations
+        for _ in 0..<20 {
+            let pixels = try renderer.renderRGBA(frame: maximum, width: 800, height: 500)
+            precondition(pixels == frozenMaximum, "reused uploads preserve every frozen particle")
+        }
+        precondition(renderer.particleBufferAllocations == allocations && allocations <= 3, "steady precipitation creates no buffers and uses at most three slots")
+        print("PASS 1600 airborne + 1200 surface particles; steady upload allocations 0 (pool \(allocations))")
         print("PASS five-weather visuals, snow over \(foliage) foliage / \(water) water samples, accumulation, smooth rain handoff, pause and long-running snow/cloud motion.")
     }
 

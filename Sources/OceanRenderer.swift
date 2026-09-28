@@ -31,6 +31,21 @@ private struct PrecipitationUniforms {
     var style: SIMD4<Float>
 }
 
+// A slot is exclusively CPU-owned until submission, then GPU-owned until completion.
+private final class PrecipitationUpload {
+    private let lock = NSLock()
+    private var busy = false
+    var buffer: MTLBuffer?
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !busy else { return false }
+        busy = true
+        return true
+    }
+    var available: Bool { lock.lock(); defer { lock.unlock() }; return !busy }
+    func release() { lock.lock(); busy = false; lock.unlock() }
+}
+
 final class OceanRenderer: NSObject, MTKViewDelegate {
     var frame = OceanFrame.empty
     private let device: MTLDevice
@@ -56,6 +71,15 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
     private let fallbackDrawing: MTLTexture
     private var drawings: [UUID: MTLTexture] = [:]
     private(set) var lastGPUSeconds: Double = 0
+    private let uploads = (0..<3).map { _ in PrecipitationUpload() }
+    private(set) var particleBufferAllocations = 0
+    private(set) var skippedGPUFrames = 0
+
+    private func claimUpload(for command: MTLCommandBuffer) -> PrecipitationUpload? {
+        guard let slot = uploads.first(where: { $0.claim() }) else { return nil }
+        command.addCompletedHandler { _ in slot.release() }
+        return slot
+    }
 
     init(view: MTKView, shaderURL: URL) throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
@@ -192,7 +216,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
               let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer() else { return }
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        encode(frame, pass: pass, command: command)
+        guard let upload = claimUpload(for: command) else { skippedGPUFrames += 1; return }
+        encode(frame, pass: pass, command: command, upload: upload)
         command.addCompletedHandler { [weak self] completed in self?.lastGPUSeconds = completed.gpuEndTime - completed.gpuStartTime }
         command.present(drawable)
         command.commit()
@@ -220,7 +245,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         return result
     }
 
-    private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer,
+    private func encode(_ frame: OceanFrame, pass: MTLRenderPassDescriptor, command: MTLCommandBuffer, upload: PrecipitationUpload,
                         includeEnvironment: Bool = true, preview: Bool = false) {
         guard let destination = pass.colorAttachments[0].texture,
               let targets = prepareTargets(width: destination.width, height: destination.height, preview: preview) else { return }
@@ -304,36 +329,46 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-        func drawPrecipitation(_ sprites: [PrecipitationUniforms]) {
-            guard !sprites.isEmpty, let buffer = device.makeBuffer(bytes: sprites,
-                length: sprites.count * MemoryLayout<PrecipitationUniforms>.stride, options: .storageModeShared) else { return }
+        let spriteCount = frame.surfaceSnow.count + frame.precipitation.count
+        let stride = MemoryLayout<PrecipitationUniforms>.stride
+        if spriteCount > 0 && (upload.buffer?.length ?? 0) < spriteCount * stride {
+            // Existing simulation budgets: 1200 surface + 1600 airborne. Three slots
+            // bound concurrent uploads; unusually large test frames can grow a slot.
+            upload.buffer = device.makeBuffer(length: max(2800, spriteCount) * stride, options: .storageModeShared)
+            particleBufferAllocations += 1
+        }
+        let sprites = upload.buffer?.contents().bindMemory(to: PrecipitationUniforms.self, capacity: max(2800, spriteCount))
+        for (index, snow) in frame.surfaceSnow.enumerated() {
+            let radius = snow.radius * (1 + min(snow.age / 2, 1) * 0.65)
+            sprites?[index] = PrecipitationUniforms(placement: SIMD4(snow.position.x, snow.position.y, radius * 3, radius * 2.4),
+                style: SIMD4(snow.opacity, 2, snow.phase, snow.phase))
+        }
+        for (index, particle) in frame.precipitation.enumerated() {
+            let point = particle.position
+            let rain = particle.kind == .rain
+            let length = rain ? max(3, -particle.velocity.y * 0.009) : particle.radius * 3
+            let width = rain ? particle.radius * 2 : particle.radius * 3
+            let angle = rain ? atan2(particle.velocity.y, particle.velocity.x) : particle.phase + particle.age * 0.2
+            sprites?[frame.surfaceSnow.count + index] = PrecipitationUniforms(placement: SIMD4(point.x, point.y, length, width),
+                style: SIMD4(particle.opacity, Float(particle.kind.rawValue), particle.phase, angle))
+        }
+        func drawPrecipitation(offset: Int, count: Int) {
+            guard count > 0, let buffer = upload.buffer else { return }
             encoder.setRenderPipelineState(precipitationPipeline)
             encoder.setDepthStencilState(effectDepth)
-            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+            encoder.setVertexBuffer(buffer, offset: offset * stride, index: 0)
             encoder.setVertexBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 1)
             encoder.setFragmentBytes(&composite, length: MemoryLayout<EffectUniforms>.stride, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: sprites.count)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: count)
         }
-        drawPrecipitation(frame.surfaceSnow.map { snow in
-            let radius = snow.radius * (1 + min(snow.age / 2, 1) * 0.65)
-            return PrecipitationUniforms(placement: SIMD4(snow.position.x, snow.position.y, radius * 3, radius * 2.4),
-                style: SIMD4(snow.opacity, 2, snow.phase, snow.phase))
-        })
+        drawPrecipitation(offset: 0, count: frame.surfaceSnow.count)
         for leaf in frame.leaves {
             let progress = min(1, max(0, leaf.age / max(leaf.fallDuration, 0.001)))
             let eased = progress * progress * (3 - 2 * progress)
             let scale: Float = leaf.stage == .falling ? 1 + 0.35 * (1 - eased) : 1
             effect(at: leaf.position, radius: leaf.length * scale, angle: leaf.rotation, type: 3, age: leaf.opacity, strength: Float(leaf.stage.rawValue), seed: Float(leaf.id))
         }
-        drawPrecipitation(frame.precipitation.map { particle in
-            let point = particle.position
-            let rain = particle.kind == .rain
-            let length = rain ? max(3, -particle.velocity.y * 0.009) : particle.radius * 3
-            let width = rain ? particle.radius * 2 : particle.radius * 3
-            let angle = rain ? atan2(particle.velocity.y, particle.velocity.x) : particle.phase + particle.age * 0.2
-            return PrecipitationUniforms(placement: SIMD4(point.x, point.y, length, width),
-                style: SIMD4(particle.opacity, Float(particle.kind.rawValue), particle.phase, angle))
-        })
+        drawPrecipitation(offset: frame.surfaceSnow.count, count: frame.precipitation.count)
         encoder.endEncoding()
     }
 
@@ -361,7 +396,8 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        encode(frame, pass: pass, command: command, includeEnvironment: includeEnvironment, preview: preview)
+        guard let upload = claimUpload(for: command) else { throw OceanRenderError.unavailable("GPU帧仍在处理中，请稍后重试。") }
+        encode(frame, pass: pass, command: command, upload: upload, includeEnvironment: includeEnvironment, preview: preview)
         return (command, output)
     }
 
@@ -381,6 +417,7 @@ final class OceanRenderer: NSObject, MTKViewDelegate {
 
     /// Encode on the renderer's owner thread; GPU waiting, conversion and PNG I/O never block it.
     @MainActor func writePNGAsync(frame: OceanFrame, width: Int, height: Int, to url: URL) async throws {
+        while !uploads.contains(where: { $0.available }) { try await Task.sleep(nanoseconds: 1_000_000) }
         let (command, output) = try readbackCommand(frame: frame, width: width, height: height)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             command.addCompletedHandler { completed in
