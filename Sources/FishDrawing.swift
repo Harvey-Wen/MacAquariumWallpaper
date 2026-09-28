@@ -118,6 +118,31 @@ enum FishDrawingError: Error { case invalidDrawing }
 struct FishDrawingStore {
     let directory: URL
 
+    private var deletedDefaultsURL: URL {
+        directory.appendingPathComponent("state/deleted-default-fish.json")
+    }
+
+    func deletedDefaultFish() throws -> Set<Int> {
+        guard FileManager.default.fileExists(atPath: deletedDefaultsURL.path) else { return [] }
+        return try JSONDecoder().decode(Set<Int>.self, from: Data(contentsOf: deletedDefaultsURL))
+    }
+
+    func removeDefaultFish(id: Int) throws {
+        var deleted = try deletedDefaultFish()
+        deleted.insert(id)
+        try FileManager.default.createDirectory(at: deletedDefaultsURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try JSONEncoder().encode(deleted.sorted()).write(to: deletedDefaultsURL, options: .atomic)
+    }
+
+    func remove(id: UUID) throws {
+        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        for url in urls where url.pathExtension.lowercased() == "json" &&
+            url.deletingPathExtension().lastPathComponent.lowercased() == id.uuidString.lowercased() {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
     func save(_ drawing: FishDrawing) throws {
         try drawing.validate()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

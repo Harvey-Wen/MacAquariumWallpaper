@@ -40,6 +40,10 @@ final class OceanSimulation {
             phase: generator.float(in: 0...(2 * .pi)), panic: 0, customAppearanceID: appearanceID))
     }
 
+    func removeFish(identity: FishIdentity) {
+        fish.removeAll { $0.identity == identity }
+    }
+
     func update(deltaTime: Float) {
         guard deltaTime.isFinite, deltaTime > 0 else { return }
         let elapsed = min(deltaTime, 1)

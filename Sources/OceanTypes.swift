@@ -31,6 +31,25 @@ enum PondWeather: String, CaseIterable {
 enum DisturbanceKind: Int { case click, rain, leaf, motion }
 enum LeafStage: Int { case falling, floating, grounded }
 
+enum FishIdentity: Hashable {
+    case builtIn(Int)
+    case custom(UUID)
+
+    var name: String {
+        switch self {
+        case .builtIn(let id): return String(format: "锦鲤 %02d", id + 1)
+        case .custom(let id): return "手绘鱼 \(id.uuidString.prefix(8))"
+        }
+    }
+
+    var storageKey: String {
+        switch self {
+        case .builtIn(let id): return "default-\(id)"
+        case .custom(let id): return id.uuidString
+        }
+    }
+}
+
 // All positions are screen points, with the origin at the screen's bottom left.
 struct FishState {
     var id: Int
@@ -43,6 +62,8 @@ struct FishState {
     var phase: Float
     var panic: Float
     var customAppearanceID: UUID? = nil
+
+    var identity: FishIdentity { customAppearanceID.map(FishIdentity.custom) ?? .builtIn(id) }
 }
 
 struct Ripple {

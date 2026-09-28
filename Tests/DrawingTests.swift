@@ -104,7 +104,39 @@ import simd
         try expect(simulation.fish.last!.position != custom.position, "custom fish moves")
         simulation.click(at: simulation.fish.last!.position)
         try expect(simulation.fish.last!.panic > 0, "custom fish responds to click")
-        print("Drawing tests passed")
+        let survivor = simulation.fish[4]
+        simulation.removeFish(identity: .builtIn(3))
+        try expect(!simulation.fish.contains { $0.identity == .builtIn(3) }, "target default fish removed")
+        try expect(simulation.fish.first { $0.identity == survivor.identity }?.position == survivor.position,
+            "removing a neighbor preserves identity and position")
+        simulation.removeFish(identity: .custom(first.id))
+        try expect(!simulation.fish.contains { $0.customAppearanceID == first.id }, "target custom fish removed")
+        for fish in simulation.fish { simulation.removeFish(identity: fish.identity) }
+        try expect(simulation.fish.isEmpty, "all default fish can be removed")
+        simulation.update(deltaTime: 1)
+        simulation.addCustomFish(appearanceID: second.id)
+        try expect(simulation.fish.count == 1 && simulation.fish[0].identity == .custom(second.id),
+            "adding to empty pond keeps custom identity separate from default IDs")
+
+        try store.removeDefaultFish(id: 3)
+        try store.removeDefaultFish(id: 29)
+        try store.removeDefaultFish(id: 3)
+        try expect(try store.deletedDefaultFish() == Set([3, 29]), "default deletions persist without duplicates")
+        try expect(store.load().drawings.count == 2, "default state is not scanned as a drawing")
+        try store.remove(id: first.id)
+        try expect(store.load().drawings.map(\.id) == [second.id], "only selected drawing is deleted")
+        let secondURL = directory.appendingPathComponent(second.id.uuidString + ".json")
+        let lowercaseURL = directory.appendingPathComponent(second.id.uuidString.lowercased() + ".json")
+        try FileManager.default.moveItem(at: secondURL, to: lowercaseURL)
+        try store.remove(id: second.id)
+        try expect(store.load().drawings.isEmpty, "loaded lowercase UUID filename can be deleted")
+        let stateURL = directory.appendingPathComponent("state/deleted-default-fish.json")
+        let corruptState = Data("broken".utf8)
+        try corruptState.write(to: stateURL)
+        do { try store.removeDefaultFish(id: 4); throw TestError.failed("corrupt deletion state overwritten") }
+        catch TestError.failed { throw TestError.failed("corrupt deletion state must fail") } catch {}
+        try expect(try Data(contentsOf: stateURL) == corruptState, "corrupt deletion state is retained")
+        print("Drawing tests passed (including persistent individual removal)")
     }
 
     static func expect(_ condition: Bool, _ message: String) throws { if !condition { throw TestError.failed(message) } }
