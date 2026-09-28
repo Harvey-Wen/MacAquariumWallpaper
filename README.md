@@ -12,6 +12,7 @@ open build/MacAquariumWallpaper.app
 应用路径：`build/MacAquariumWallpaper.app`。启动后在菜单栏找到鱼形图标。菜单提供：
 
 - **画一条鱼…**：先用独立的“鱼身底色”选择颜色，再自由画花纹，支持调色板、自选颜色、笔触粗细、橡皮、撤销和清空。点击“加入池塘”新增一条鱼，保留摆尾、游动、鼠标避让及水波折射；取消或关闭不新增。池塘隐藏时会重新显示，暂停状态保持不变。
+- **鱼的列表…**：查看池塘中的所有鱼，手绘鱼优先显示，默认锦鲤随后排列。每条都有实际外观缩略图、固定名称和来源，可逐条点击“删除”并确认。默认的 30 条锦鲤和手绘鱼都可以删除，重启后也不会恢复；其他鱼不会重新编号。新增、删除会同步列表和池塘，删除不改变暂停或隐藏状态。再次打开已运行的应用也会显示列表。
 - **显示池塘**：显示或隐藏桌面场景。
 - **暂停游动 / 继续游动**：冻结或恢复鱼、雨、雪花、云影、水波和落叶。
 - **鼠标互动**：无需按键，滑过露出的桌面池水会沿移动方向带出尾流，沿途附近锦鲤转向、短暂加速避开，随后恢复游动；短距离移动也能影响鱼儿，无需等待下一道水纹。点击产生更明显的涟漪与短暂散开。水波带有明暗起伏，并折射水底和鱼；漂浮落叶随波移动。鼠标静止或进入应用、菜单及枝叶遮挡区域时不产生新尾流或新的鼠标惊扰。
@@ -21,6 +22,8 @@ open build/MacAquariumWallpaper.app
 启动先展示雨天，五种天气可在菜单切换。场景以 1600×1000 坐标映射内置池塘底图，按主屏比例居中铺满；不同屏幕比例会裁切外围景物。锦鲤、水波、雨丝、雪花、云影和落叶由程序实时绘制，菜单栏背景使用同一场景的静态帧。底图来源与处理方式见 [视觉素材说明](docs/concepts/README.md)。
 
 手绘鱼在默认 30 条锦鲤之外追加，花纹自动保存在 `~/Library/Application Support/local.macaquariumwallpaper.app/CustomFish/`，下次启动恢复。底色与画笔颜色独立；更换底色保留花纹，橡皮恢复当前底色，清空只移除花纹。鱼鳍和眼睛保留；无需联网。保存失败时窗口保留草稿并提示错误，部分记录损坏时菜单显示载入提醒，其余有效记录照常恢复。
+
+删除手绘鱼会移除对应的绘画文件；默认鱼的已删除编号保存在同一目录下的 `state/deleted-default-fish.json`。删除记录保存失败时保留画面中的鱼并显示错误；默认鱼的删除记录损坏时，菜单显示载入提醒且不会覆盖原记录。可以删除所有鱼，空列表仍保留“画一条鱼…”入口。
 
 ## 桌面与权限
 
@@ -39,6 +42,7 @@ bash scripts/test-simulation.sh
 bash scripts/test-input.sh
 bash scripts/test-drawing.sh
 bash scripts/test-drawing-window.sh
+bash scripts/test-fish-list-window.sh
 zsh scripts/test-custom-fish-renderer.sh
 bash scripts/test-custom-fish-desktop.sh
 zsh scripts/test-renderer.sh

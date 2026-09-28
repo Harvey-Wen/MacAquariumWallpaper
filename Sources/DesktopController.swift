@@ -263,6 +263,7 @@ final class TransparentMetalView: MTKView {
             "fish": simulation.fish.count, "ripples": simulation.ripples.count,
             "customFish": simulation.fish.filter { $0.customAppearanceID != nil }.count,
             "customFishLoadErrors": customFishErrors.count,
+            "defaultFishLoadError": defaultFishError ?? "",
             "motionRipples": simulation.ripples.filter { $0.source == .motion }.count,
             "leaves": simulation.leaves.count, "weather": weather.rawValue,
             "weatherAmount": simulation.frame(waterStrength: 0.45).weatherAmount,

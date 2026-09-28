@@ -5,6 +5,7 @@ import AppKit
     private var statusItem: NSStatusItem?
     private var launchError: String?
     private var drawingWindow: FishDrawingWindowController?
+    private var fishListWindow: FishListWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -25,6 +26,7 @@ import AppKit
                 controller.diagnosticURL = URL(fileURLWithPath: args[index + 1])
             }
             desktop = controller
+            controller.onFishChanged = { [weak self] in self?.fishListWindow?.reload() }
             controller.weather = .rainy
             controller.start()
         } catch {
@@ -36,6 +38,11 @@ import AppKit
 
     func menuWillOpen(_ menu: NSMenu) { rebuildMenu(menu) }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showFishList()
+        return false
+    }
+
     private func rebuildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         let title = NSMenuItem(title: desktop?.status ?? launchError ?? "正在启动…", action: nil, keyEquivalent: "")
@@ -44,6 +51,12 @@ import AppKit
         menu.addItem(.separator())
         if let desktop {
             add(menu, "画一条鱼…", #selector(drawFish), key: "n")
+            add(menu, "鱼的列表…", #selector(showFishList), key: "l")
+            if let error = desktop.defaultFishError {
+                let warning = NSMenuItem(title: "默认鱼的删除记录未能载入", action: nil, keyEquivalent: "")
+                warning.toolTip = error
+                warning.isEnabled = false; menu.addItem(warning)
+            }
             if !desktop.customFishErrors.isEmpty {
                 let warning = NSMenuItem(title: "部分手绘鱼未能载入（\(desktop.customFishErrors.count)）", action: nil, keyEquivalent: "")
                 warning.toolTip = desktop.customFishErrors.joined(separator: "\n")
@@ -86,6 +99,16 @@ import AppKit
             drawingWindow = FishDrawingWindowController(onAdd: desktop.addCustomFish)
         }
         drawingWindow?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc private func showFishList() {
+        guard let desktop else { return }
+        if fishListWindow == nil {
+            fishListWindow = FishListWindowController(readFish: { desktop.simulation.fish },
+                preview: desktop.renderer.fishPreview, onDelete: desktop.removeFish,
+                onAdd: { [weak self] in self?.drawFish() })
+        }
+        fishListWindow?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func togglePaused() { desktop?.paused.toggle() }
