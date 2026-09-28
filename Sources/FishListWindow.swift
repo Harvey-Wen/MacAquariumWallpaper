@@ -143,7 +143,8 @@ final class FishListWindowController: NSWindowController, NSTableViewDataSource,
             name.font = .systemFont(ofSize: 14, weight: .medium)
             name.lineBreakMode = .byTruncatingTail
             name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let source = NSTextField(labelWithString: item.customAppearanceID == nil ? "默认锦鲤" : "手绘新增 · \(item.identity.storageKey.prefix(8))")
+            let source = NSTextField(labelWithString: item.customAppearanceID == nil
+                ? String(format: "默认锦鲤 · %02d", item.id + 1) : "手绘新增 · \(item.identity.storageKey.prefix(8))")
             source.font = .systemFont(ofSize: 12)
             source.textColor = .secondaryLabelColor
             cell.textField = name
